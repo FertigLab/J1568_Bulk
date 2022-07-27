@@ -1,0 +1,34 @@
+---
+title: "Neoantigen_Plots"
+author: "Joe"
+date: "6/12/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+##Load SampAnnot
+```{r}
+Neoantigen_sampInfo = read.csv('~/Documents/Lei/TMB_fromMAF.csv')
+Neoantigen_sampInfo = Neoantigen_sampInfo[Neoantigen_sampInfo$Treatment %in% c("GVAX","Nivo"),]
+
+```
+
+##Load Neoantigen Sheet
+```{r}
+Neoantigen <- read_excel("Neoantigen_prediction 19s_(DNA-seq).xlsx", sheet = "HLA_A.19s.neoantigen.countstat")
+Neoantigen$X <- gsub(".*-VS-","",Neoantigen$Sample)
+```
+
+##Boxplots
+```{r}
+plotdf <- merge(Neoantigen_sampInfo,Neoantigen,by="X")
+
+pdf(file="~/Documents/Lei/Neoantigen_Plots.pdf")
+ggplot(plotdf, aes(x=Treatment, y=Total_mutationsite_valid)) + geom_boxplot() + geom_point(aes(col=X)) + stat_compare_means(method = "t.test")
+ggplot(plotdf, aes(x=Treatment, y=netMHCpan_total_mutationsite_valid)) + geom_boxplot() + geom_point(aes(col=X)) + stat_compare_means(method = "t.test")
+dev.off()
+```
+

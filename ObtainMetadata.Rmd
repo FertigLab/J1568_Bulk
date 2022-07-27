@@ -1,0 +1,47 @@
+---
+title: "Extracting metadata from fastq files"
+author: "Elana Fertig"
+date: '2022-05-10'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F)
+```
+
+# R libraries and session info
+
+```{r}
+library('DT')
+sessionInfo()
+```
+
+# load in MD checksums to get all files
+
+## Batch 1
+
+```{r}
+Batch1 <- read.table('../JHU - Part 1/170912-134154/md5sum.txt',
+                     sep=" ")
+fastqFiles <- grep('fastq',sub('./FASTQ/','',Batch1[,3]),value=T)
+fastqTable <- t(sapply(strsplit(fastqFiles,split="[/_]"),function(x){x}))
+unique(paste(fastqTable[,3],fastqTable[,4]))
+```
+
+# Batch 2
+
+```{r}
+Batch2 <- read.table('../JHU - Part 2/md5sum.txt',
+                     sep=" ")
+fastqFiles <- grep('fastq',sub('./FASTQ/','',Batch2[,3]),value=T)
+fastqTable <- t(sapply(strsplit(fastqFiles,split="[/_]"),function(x){x}))
+unique(paste(fastqTable[,4],fastqTable[,5]))
+```
+# Batch 3 
+
+```{r}
+Batch3 <- read.table('../md5sum.txt', sep=" ")
+fastqFiles <- grep('fastq',sub('./FASTQ/','',Batch3[,3]),value=T)
+fastqTable <- strsplit(fastqFiles,split="[/_]")
+unique(sapply(fastqTable,function(x){paste(x[2:3],collapse=" ")}))
+```

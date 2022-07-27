@@ -1,0 +1,904 @@
+---
+title: "Preprocessing and Comaprison of Sample Filtering -- CD8+CD137+ Status Differential Expression"
+author: "Elana Fertig & Joe Tandurella"
+date: '2022-06-3'
+knit: (function(inputFile, encoding) {
+  rmarkdown::render(inputFile, encoding = encoding, output_dir = "~/OneDrive - Johns Hopkins/JHU_PDAC_Collaboration/Analysis_HTMLs/") })
+output:
+  html_document:
+    toc: true
+    theme: united
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# R libraries and versions
+
+```{r}
+library('readxl')
+library('DESeq2')
+library('ComplexHeatmap')
+library('EnhancedVolcano')
+library('pca3d')
+library('sva')
+library('DT')
+library('fgsea')
+library('GSVA')
+library(ggplot2)
+library(ggpubr)
+library(tidyverse)
+library(dplyr)
+library(tidyr)
+library(data.table)
+set.seed(1234)
+sessionInfo()
+```
+
+# Read in GEO data
+
+## Expression counts data
+
+```{r}
+load('NewGeneCounts.Rda')
+exprsDat <- txi.tx.genes.all$counts
+```
+
+## Sample Annotations
+
+```{r}
+sampAnnot <- as.data.frame(read_xls('j1568 sorted rna sample_attributes_survival_immuno_annot_LeiEdited.xls'))
+sampAnnot$Treatment[sampAnnot$Treatment == 'GVAX_CY_Nivo'] <- 
+  'GVAX_CY_NIVO'
+rownames(sampAnnot) <- make.names(sampAnnot$Sample_id)
+```
+
+# Data normalization and exploratory data analysis
+
+## Limit data to treatment groups of interest
+
+```{r}
+sampAnnot <- sampAnnot[sampAnnot$`Processed as` != 'control',]
+sampAnnot <- sampAnnot[sampAnnot$Treatment != "GVAX_SBRT_Pembro",]
+
+sampAnnot$batch <- ifelse(sapply(strsplit(sampAnnot$Sample_id, split="_"),length) == 4, 'A', 'B')
+
+sampAnnot[sampAnnot$batch=='A','Sample_id'] <- 
+  substring(sampAnnot$Sample_id,4)[sampAnnot$batch=='A']
+
+exprsDat <- exprsDat[,rownames(sampAnnot)]
+
+sampAnnot <- sampAnnot[colnames(exprsDat),]
+```
+
+## Evaluation of sample quality based upon distribution of reads
+
+We evaluate sample quality from the distribution of reads as visualized in a boxplot of log counts. We observe `r sum(apply(log2(exprsDat+1),2,median)==0)` samples with zero median expression (`rpaste(names(which(apply(log2(exprsDat+1),2,median)==0)), collapse="; ")`) reflective of low read count to be filtered from subsequent analysis as low quality.
+
+```{r}
+boxplot(log2(exprsDat+1), ylab='log2(counts+1)', 
+        xlab='samples', las=2, cex.axis = 0.25, 
+        border = ifelse(apply(log2(exprsDat+1),2,median)==0,
+                        'red','black'))
+legend('topleft', pch=c('-'), legend = c('median > 0', 'median < 0'),
+       col=c('black','red'), cex=0.5)
+
+datatable(cbind(sampAnnot,
+                lowCountFilter=apply(log2(exprsDat+1),2,median)>0))
+```
+
+```{r}
+sampAnnotMedianFilter <- sampAnnot[apply(log2(exprsDat+1),2,median)>0,]
+exprsDatMedian <- exprsDat[,apply(log2(exprsDat+1),2,median)>0]
+```
+
+
+## Obtain normalized log counts with vst 
+
+[`DESeq2`](https://genomebiology.biomedcentral.com/articles/10.1186/s13059-014-0550-8) is used for variance stabilization transformation for count normalization. 
+
+```{r}
+dds <- DESeqDataSetFromMatrix(countData = round(exprsDatMedian), 
+                              colData = sampAnnotMedianFilter, 
+                              design=~Cell_Type)
+vstDat <- assay(vst(dds))
+vstDat <- vstDat[apply(vstDat,1,sd)>0,]
+```
+
+## Perform PCA analysis to evaluate sample clustering
+
+We use PCA of the `vst` normalized data to evaluate sample clustering by cell type. We observe largely robust clustering by cell type, with an outlier CD8 and CD19 sample.
+
+```{r}
+pcs <- prcomp(t(vstDat),scale=T)
+pca2d(pcs,
+      group=sampAnnotMedianFilter$Cell_Type, legend="topleft")
+title('PCA of vst counts after median filtering')
+```
+
+## Expression of marker genes
+
+To further evaluate sample quality, we look at marker gene expression and its relationship to the sample groups observed in the PCA analysis.
+
+```{r}
+markerGenes <- c('CD4','CD8A','CD8B','ITGAM','CD19')
+
+ht <- Heatmap(t(apply(vstDat[markerGenes,],1,scale)),
+        clustering_distance_rows = 'pearson',
+        clustering_distance_columns = 'pearson')
+
+k5clust <- as.character(cutree(as.hclust(column_dend(ht)), k=5))
+dfAnnot = data.frame(Cell_Type=sampAnnotMedianFilter[,'Cell_Type'],
+                     cluster=k5clust)
+row.names(dfAnnot) <- sampAnnotMedianFilter$Sample_id
+
+HA <- HeatmapAnnotation(df = dfAnnot,
+                        col=list(Cell_Type =
+                                   c('CD11b'='orange','CD19'='blue',
+                                     'CD4'='green','CD8'='yellow'),
+                                 cluster = c('1'='yellow',
+                                             '2'='green',
+                                             '3'='blue',
+                                             '4'='orange',
+                                             '5'='red')))
+
+Heatmap(t(apply(vstDat[markerGenes,],1,scale)),
+        top_annotation = HA,
+        clustering_distance_rows = 'pearson',
+        clustering_distance_columns = 'pearson')
+
+dfAnnot$Mislabel <- F
+dfAnnot$Mislabel[dfAnnot$cluster=='5'] <- T
+sampleClusters <- apply(table(k5clust,
+                              sampAnnotMedianFilter$Cell_Type),2,
+                        which.max)
+
+for (c in names(sampleClusters)) {
+  dfAnnot$Mislabel[dfAnnot$Cell_Type == c &
+                     dfAnnot$cluster != sampleClusters[c]] <- T
+}
+
+```
+
+Based on the clustering analysis analysis of marker genes, we identify potential mislabeling in the following samples:
+
+```{r}
+datatable(dfAnnot[dfAnnot$Mislabel,])
+```
+
+# Visualization of samples retained for analysis
+
+```{r}
+sampAnnotFilter <- sampAnnotMedianFilter[!dfAnnot$Mislabel,]
+exprsDatFilter <- exprsDat[,rownames(sampAnnotFilter)]
+
+dds <- DESeqDataSetFromMatrix(countData = round(exprsDatFilter), 
+                              colData = sampAnnotFilter, 
+                              design=~Cell_Type)
+vstDat <- assay(vst(dds))
+vstDat <- vstDat[apply(vstDat,1,sd)>0,]
+
+pcs <- prcomp(t(vstDat),scale=T)
+pca2d(pcs,
+      group=sampAnnotFilter$Cell_Type, legend="topleft")
+title('PCA of vst counts of filtered data')
+```
+
+```{r}
+dfAnnot = data.frame(Cell_Type=sampAnnotFilter[,'Cell_Type'])
+row.names(dfAnnot) <- sampAnnotFilter$Sample_id
+
+HA <- HeatmapAnnotation(df = dfAnnot,
+                        col=list(Cell_Type =
+                                   c('CD11b'='orange','CD19'='blue',
+                                     'CD4'='green','CD8'='yellow'),
+                                 cluster = c('1'='green',
+                                             '2'='yellow',
+                                             '3'='orange',
+                                             '4'='blue',
+                                             '5'='red')))
+
+Heatmap(t(apply(vstDat[markerGenes,],1,scale)),
+        top_annotation = HA,
+        clustering_distance_rows = 'pearson',
+        clustering_distance_columns = 'pearson')
+```
+
+## Final sample numbers
+
+```{r}
+print("Treatment Samp Numbers")
+table(sampAnnotFilter$Cell_Type,
+      sampAnnotFilter$Treatment)
+
+print("CD8CD137 Status Samp Numbers")
+table(sampAnnotFilter$Cell_Type,
+      sampAnnotFilter$CD8_CD137_Status)
+```
+
+Due to low sample numbers in each condition, only CD4 and CD8 samples will undergo Differential Expression Analysis. Minumum 3 Samples per group required. 
+
+# Evaluation of batch effects
+
+```{r}
+batches <- read.csv('BatchAnnot.csv',sep=",", header=F)
+batches$SampleID <- sprintf('%d_%03d_%s',
+                            batches[,3], 
+                            batches[,4],
+                            batches[,5])
+batches$SampleID[batches[,6]=='RLT'] <- 
+  paste0(batches$SampleID[batches[,6]=='RLT'], '_RLT')
+batches <- batches[!duplicated(batches$SampleID),]
+
+row.names(batches) <- unique(batches$SampleID)
+
+
+
+
+dfAnnot = data.frame(sampAnnotFilter[,c('Cell_Type',
+                                                  'Treatment')],
+                     batches[sampAnnotFilter$Sample_id,1:2])
+row.names(dfAnnot) <- sampAnnotFilter$Sample_id
+
+HA <- HeatmapAnnotation(df = dfAnnot,
+                        col=list(Cell_Type =
+                                   c('CD11b'='orange','CD19'='blue',
+                                     'CD4'='green','CD8'='yellow')))
+
+Heatmap(t(apply(vstDat[markerGenes,],1,scale)),
+        top_annotation = HA,
+        clustering_distance_rows = 'pearson',
+        clustering_distance_columns = 'pearson')
+
+pca2d(pcs,
+      group=dfAnnot$V1, legend="topleft")
+title('PCA of vst counts of filtered data by batch')
+
+datCombat <- sva::ComBat(vstDat,
+                         dfAnnot$V1,
+                         mod=model.matrix(~dfAnnot$Cell_Type))
+
+pcsCombat <- prcomp(t(datCombat),scale=T)
+pca2d(pcsCombat,
+      group=sampAnnotFilter$Cell_Type, legend="topright")
+title('PCA of vst counts of filtered and batch corrected data')
+```
+
+# Differential expression and gene set analyses by cell type
+
+For each cell type, we run differential expression analysis with [DESeq2](https://genomebiology.biomedcentral.com/articles/10.1186/s13059-014-0550-8), including batch as a covariate in our model. Estimated fold changes are shrunk with `apeglm` using `lfcShrink` to account for the variation in the samples in this dataset. Gene set statistics are run with [fgsea](https://www.biorxiv.org/content/10.1101/060012v3) with [MSigDb](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC3106198/) v7.5.1 pathways annotated in [KEGG](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC5210567/), REACTOME, [IMMUNESIGDB](http://dx.doi.org/10.1016/j.immuni.2015.12.006), and GO as well as a custom set of immune databases downloaded directly from these databases.
+
+```{r}
+HALLMARK <- gmtPathways('h.all.v7.5.1.symbols.gmt.txt')
+KEGG <- gmtPathways('c2.cp.kegg.v7.5.1.symbols.gmt.txt')
+REACTOME <- gmtPathways('c2.cp.reactome.v7.5.1.symbols.gmt.txt')
+IMMUNESIG <- gmtPathways('c7.immunesigdb.v7.5.1.symbols.gmt.txt')
+GOBP <- gmtPathways('c5.go.bp.v7.5.1.symbols.gmt.txt')
+GOMF <- gmtPathways('c5.go.mf.v7.5.1.symbols.gmt.txt')
+
+# obtain custom immune pathways (subset to human lists)
+customImmune <- gmtPathways('genesetkeyunew.gmt')
+customImmune <- sapply(customImmune,function(x){setdiff(x,"")})
+customImmune <- customImmune[sapply(customImmune,
+                                  function(x){all(x==toupper(x))})]
+
+DEByCellType <- function(CellType) {
+  sampByCell <- sampAnnotFilter[sampAnnotFilter$Cell_Type == CellType & !is.na(sampAnnotFilter$CD8_CD137_Status),]
+  sampIds <- rownames(sampByCell)
+  
+  ##Treatment OS
+  dds <- DESeqDataSetFromMatrix(countData =
+                                  round(exprsDatFilter)[,colnames(exprsDatFilter) %in% sampIds], 
+                              colData = sampByCell, 
+                              design=~CD8_CD137_Status+batch)
+  dds <- DESeq(dds)
+  res <- results(dds, name="CD8_CD137_Status_Low_vs_High")
+  res <- lfcShrink(dds, coef="CD8_CD137_Status_Low_vs_High", 
+                   res=res)
+  res <- res[!is.na(res$padj),]
+  
+  stats <- res$log2FoldChange
+
+  gsResults <- list(HALLMARK=fgsea(pathways=HALLMARK, 
+                               stats=stats),
+                    KEGG=fgsea(pathways=KEGG, 
+                               stats=stats),
+                    REACTOME=fgsea(pathways=REACTOME,
+                                   stats=stats), 
+                    IMMMUNESIG=fgsea(pathways=IMMUNESIG,
+                                     stats=stats),
+                    GOBP = fgsea(pathways=GOBP,
+                                     stats=stats),
+                    GOMF = fgsea(pathways=GOMF,
+                                 stats=stats),
+                    custom=fgsea(pathways=customImmune,
+                                 stats=stats))
+  
+  return(list(res=res,gs=gsResults))
+}
+```
+
+## CD4 cells
+
+```{r}
+CD4Res <- DEByCellType('CD4')
+CD4DE <- CD4Res$res
+
+datatable(data.frame(CD4DE))
+EnhancedVolcano(CD4DE, lab=row.names(CD4DE), 
+                x='log2FoldChange', y='padj', FCcutoff = 0.5,
+                pCutoff = 0.05)
+
+DEGenes <- row.names(CD4DE)[CD4DE$padj < 0.05 &
+                              abs(CD4DE$log2FoldChange) > 0.5]
+TopDE <- CD4DE[CD4DE$padj < 0.05 &
+                              abs(CD4DE$log2FoldChange) > 0.5,]
+
+write.csv(TopDE, "CD4_TopDE_CD8CD137.csv")
+sampCD4 <- sampAnnotFilter[sampAnnotFilter$Cell_Type == 'CD4' & !is.na(sampAnnotFilter$CD8_CD137_Status),]
+
+dfAnnot = data.frame(CD8_CD137_Status=sampCD4[,'CD8_CD137_Status'],
+                     Batches=batches[sampCD4$Sample_id,1:2],
+                     Treatment=sampCD4[,'Treatment'])
+```
+
+```{r, fig.height=10}
+HA <- HeatmapAnnotation(df = dfAnnot,
+                        col=list(CD8_CD137_Status =
+                                   c('High'='blue',
+                                     'Low'='red'), 
+                                 Treatment =
+                                   c('GVAX_CY'='blue',
+                                     'GVAX_CY_NIVO'='red')))
+
+
+Heatmap(t(apply(datCombat[DEGenes, rownames(sampCD4)],1,scale)),top_annotation = HA,
+        clustering_distance_rows = 'pearson', 
+        clustering_distance_columns = 'pearson',
+        row_names_gp = gpar(fontsize = 6))
+```
+
+### HALLMARK statistics
+
+```{r}
+datatable(CD4Res$gs$HALLMARK)
+fwrite((CD4Res$gs$HALLMARK), file="CD4_HALLMARK_CD8CD137.csv")
+
+## Complete HALLMARK Barplot
+CD4Res$gs$HALLMARK$adjPvalue <- ifelse(CD4Res$gs$HALLMARK$padj <= 0.05, "significant", "non-significant")
+cols <- c("non-significant" = "grey", "significant" = "red")
+ggplot(CD4Res$gs$HALLMARK, aes(reorder(pathway, NES), NES, fill = adjPvalue)) +
+  geom_col() +
+  scale_fill_manual(values = cols) +
+  theme(axis.text.y = element_text(size=5)) +
+  coord_flip() +
+  labs(x="Pathway", y="Normalized Enrichment Score",
+  title="Hallmark pathways Enrichment Score from CD8_CD137_Status in CD4 Cells") + theme(plot.title.position = "plot", plot.title = element_text(size=8, face="bold"))
+
+## Sig Only HALLMARK Barplot
+Sig_CD4ResHALLMARK <- CD4Res$gs$HALLMARK[padj < 0.05]
+if (nrow(Sig_CD4ResHALLMARK)==0){ print("No Significant pathways with pAdj < 0.05"
+)} else {
+  ggplot(Sig_CD4ResHALLMARK, aes(reorder(pathway, NES), NES, fill = adjPvalue)) +
+  geom_col() +
+  scale_fill_manual(values = cols) +
+  theme(axis.text.y = element_text(size=5)) +
+  coord_flip() +
+  labs(x="Pathway", y="Normalized Enrichment Score",
+  title="Significant (pAdj<0.05) Hallmark pathways Enrichment Score from CD8_CD137_Status in CD4 Cells") + theme(plot.title.position = "plot", plot.title = element_text(size=8, face="bold"))
+}
+```
+
+### KEGG statistics
+
+```{r}
+datatable(CD4Res$gs$KEGG)
+fwrite((CD4Res$gs$KEGG), file="CD4_KEGG_CD8CD137.csv")
+
+## KEGG Barplot
+CD4Res$gs$KEGG$adjPvalue <- ifelse(CD4Res$gs$KEGG$padj <= 0.05, "significant", "non-significant")
+cols <- c("non-significant" = "grey", "significant" = "red")
+ggplot(CD4Res$gs$KEGG, aes(reorder(pathway, NES), NES, fill = adjPvalue)) +
+  geom_col() +
+  scale_fill_manual(values = cols) +
+  theme(axis.text.y = element_text(size=2)) +
+  coord_flip() +
+  labs(x="Pathway", y="Normalized Enrichment Score",
+  title="KEGG pathways Enrichment Score from CD8_CD137_Status in CD4 Cells") + theme(plot.title.position = "plot", plot.title = element_text(size=8, face="bold"))
+
+## Sig Only KEGG Barplot
+Sig_CD4ResKEGG <- CD4Res$gs$KEGG[padj < 0.05]
+if (nrow(Sig_CD4ResKEGG)==0){ print("No Significant pathways with pAdj < 0.05"
+)} else {
+  ggplot(Sig_CD4ResKEGG, aes(reorder(pathway, NES), NES, fill = adjPvalue)) +
+  geom_col() +
+  scale_fill_manual(values = cols) +
+  theme(axis.text.y = element_text(size=5)) +
+  coord_flip() +
+  labs(x="Pathway", y="Normalized Enrichment Score",
+  title="Significant (pAdj<0.05) KEGG pathways Enrichment Score from CD8_CD137_Status in CD4 Cells") + theme(plot.title.position = "plot", plot.title = element_text(size=8, face="bold"))
+}
+
+```
+
+### REACTOME statistics
+
+```{r}
+datatable(CD4Res$gs$REACTOME)
+fwrite((CD4Res$gs$REACTOME), file="CD4_REACTOME_CD8CD137.csv")
+
+## REACTOME Barplot
+CD4Res$gs$REACTOME$adjPvalue <- ifelse(CD4Res$gs$REACTOME$padj <= 0.05, "significant", "non-significant")
+cols <- c("non-significant" = "grey", "significant" = "red")
+ggplot(CD4Res$gs$REACTOME, aes(reorder(pathway, NES), NES, fill = adjPvalue)) +
+  geom_col() +
+  scale_fill_manual(values = cols) +
+  theme(axis.text.y = element_text(size=2)) +
+  coord_flip() +
+  labs(x="Pathway", y="Normalized Enrichment Score",
+  title="REACTOME pathways Enrichment Score from CD8_CD137_Status in CD4 Cells") + theme(plot.title.position = "plot", plot.title = element_text(size=8, face="bold"))
+
+## Sig Only REACTOME Barplot
+Sig_CD4ResREACTOME <- CD4Res$gs$REACTOME[padj < 0.05]
+if (nrow(Sig_CD4ResREACTOME)==0){ print("No Significant pathways with pAdj < 0.05"
+)} else {
+  ggplot(Sig_CD4ResREACTOME, aes(reorder(pathway, NES), NES, fill = adjPvalue)) +
+  geom_col() +
+  scale_fill_manual(values = cols) +
+  theme(axis.text.y = element_text(size=5)) +
+  coord_flip() +
+  labs(x="Pathway", y="Normalized Enrichment Score",
+  title="Significant (pAdj<0.05) REACTOME pathways Enrichment Score from CD8_CD137_Status in CD4 Cells") + theme(plot.title.position = "plot", plot.title = element_text(size=8, face="bold"))
+}
+
+```
+
+### GO BP statistics
+
+```{r}
+datatable(CD4Res$gs$GOBP)
+fwrite((CD4Res$gs$GOBP), file="CD4_GOBP_CD8CD137.csv")
+
+## GOBP Barplot
+CD4Res$gs$GOBP$adjPvalue <- ifelse(CD4Res$gs$GOBP$padj <= 0.05, "significant", "non-significant")
+cols <- c("non-significant" = "grey", "significant" = "red")
+ggplot(CD4Res$gs$GOBP, aes(reorder(pathway, NES), NES, fill = adjPvalue)) +
+  geom_col() +
+  scale_fill_manual(values = cols) +
+  theme(axis.text.y = element_text(size=2)) +
+  coord_flip() +
+  labs(x="Pathway", y="Normalized Enrichment Score",
+  title="GOBP pathways Enrichment Score from CD8_CD137_Status in CD4 Cells") + theme(plot.title.position = "plot", plot.title = element_text(size=8, face="bold"))
+
+## Sig Only GOBP Barplot
+Sig_CD4ResGOBP <- CD4Res$gs$GOBP[padj < 0.05]
+if (nrow(Sig_CD4ResGOBP)==0){ print("No Significant pathways with pAdj < 0.05"
+)} else {
+  ggplot(Sig_CD4ResGOBP, aes(reorder(pathway, NES), NES, fill = adjPvalue)) +
+  geom_col() +
+  scale_fill_manual(values = cols) +
+  theme(axis.text.y = element_text(size=5)) +
+  coord_flip() +
+  labs(x="Pathway", y="Normalized Enrichment Score",
+  title="Significant (pAdj<0.05) GOBP pathways Enrichment Score from CD8_CD137_Status in CD4 Cells") + theme(plot.title.position = "plot", plot.title = element_text(size=8, face="bold"))
+}
+```
+
+
+### GO MF statistics
+
+```{r}
+datatable(CD4Res$gs$GOMF)
+fwrite((CD4Res$gs$GOMF), file="CD4_GOMF_CD8CD137.csv")
+
+## GOMF Barplot
+CD4Res$gs$GOMF$adjPvalue <- ifelse(CD4Res$gs$GOMF$padj <= 0.05, "significant", "non-significant")
+cols <- c("non-significant" = "grey", "significant" = "red")
+ggplot(CD4Res$gs$GOMF, aes(reorder(pathway, NES), NES, fill = adjPvalue)) +
+  geom_col() +
+  scale_fill_manual(values = cols) +
+  theme(axis.text.y = element_text(size=2)) +
+  coord_flip() +
+  labs(x="Pathway", y="Normalized Enrichment Score",
+  title="GOMF pathways Enrichment Score from CD8_CD137_Status in CD4 Cells") + theme(plot.title.position = "plot", plot.title = element_text(size=8, face="bold"))
+
+## Sig Only GOMF Barplot
+Sig_CD4ResGOMF <- CD4Res$gs$GOMF[padj < 0.05]
+if (nrow(Sig_CD4ResGOMF)==0){ print("No Significant pathways with pAdj < 0.05"
+)} else {
+  ggplot(Sig_CD4ResGOMF, aes(reorder(pathway, NES), NES, fill = adjPvalue)) +
+  geom_col() +
+  scale_fill_manual(values = cols) +
+  theme(axis.text.y = element_text(size=5)) +
+  coord_flip() +
+  labs(x="Pathway", y="Normalized Enrichment Score",
+  title="Significant (pAdj<0.05) GOMF pathways Enrichment Score from CD8_CD137_Status in CD4 Cells") + theme(plot.title.position = "plot", plot.title = element_text(size=8, face="bold"))
+}
+```
+
+## CD8 cells
+
+```{r}
+CD8Res <- DEByCellType('CD8')
+CD8DE <- CD8Res$res
+
+datatable(data.frame(CD8DE))
+EnhancedVolcano(CD8DE, lab=row.names(CD8DE), 
+                x='log2FoldChange', y='padj', FCcutoff = 0.5,
+                pCutoff = 0.05)
+
+DEGenes <- row.names(CD8DE)[CD8DE$padj < 0.05 &
+                              abs(CD8DE$log2FoldChange) > 0.5]
+TopDE <- CD8DE[CD8DE$padj < 0.05 &
+                              abs(CD8DE$log2FoldChange) > 0.5,]
+
+write.csv(TopDE, "CD8_TopDE_CD8CD137.csv")
+
+sampCD8 <- sampAnnotFilter[sampAnnotFilter$Cell_Type == 'CD8' & !is.na(sampAnnotFilter$CD8_CD137_Status),]
+
+dfAnnot = data.frame(CD8_CD137_Status=sampCD8[,'CD8_CD137_Status'],
+                     Batches=batches[sampCD8$Sample_id,1:2],
+                     Treatment=sampCD8[,'Treatment'])
+```
+
+```{r, fig.height=10}
+HA <- HeatmapAnnotation(df = dfAnnot,
+                        col=list(CD8_CD137_Status =
+                                   c('High'='blue',
+                                     'Low'='red'), 
+                                 Treatment =
+                                   c('GVAX_CY'='blue',
+                                     'GVAX_CY_NIVO'='red')))
+
+
+Heatmap(t(apply(datCombat[DEGenes, rownames(sampCD8)],1,scale)),top_annotation = HA,
+        clustering_distance_rows = 'pearson', 
+        clustering_distance_columns = 'pearson',
+        row_names_gp = gpar(fontsize = 6))
+```
+
+### HALLMARK statistics
+
+```{r}
+datatable(CD8Res$gs$HALLMARK)
+fwrite((CD8Res$gs$HALLMARK), file="CD8_HALLMARK_CD8CD137.csv")
+
+## Complete HALLMARK Barplot
+CD8Res$gs$HALLMARK$adjPvalue <- ifelse(CD8Res$gs$HALLMARK$padj <= 0.05, "significant", "non-significant")
+cols <- c("non-significant" = "grey", "significant" = "red")
+ggplot(CD8Res$gs$HALLMARK, aes(reorder(pathway, NES), NES, fill = adjPvalue)) +
+  geom_col() +
+  scale_fill_manual(values = cols) +
+  theme(axis.text.y = element_text(size=5)) +
+  coord_flip() +
+  labs(x="Pathway", y="Normalized Enrichment Score",
+  title="Hallmark pathways Enrichment Score from CD8_CD137_Status in CD8 Cells") + theme(plot.title.position = "plot", plot.title = element_text(size=8, face="bold"))
+
+## Sig Only HALLMARK Barplot
+Sig_CD8ResHALLMARK <- CD8Res$gs$HALLMARK[padj < 0.05]
+if (nrow(Sig_CD8ResHALLMARK)==0){ print("No Significant pathways with pAdj < 0.05"
+)} else {
+  ggplot(Sig_CD8ResHALLMARK, aes(reorder(pathway, NES), NES, fill = adjPvalue)) +
+  geom_col() +
+  scale_fill_manual(values = cols) +
+  theme(axis.text.y = element_text(size=5)) +
+  coord_flip() +
+  labs(x="Pathway", y="Normalized Enrichment Score",
+  title="Significant (pAdj<0.05) Hallmark pathways Enrichment Score from CD8_CD137_Status in CD8 Cells") + theme(plot.title.position = "plot", plot.title = element_text(size=8, face="bold"))
+}
+```
+
+### KEGG statistics
+
+```{r}
+datatable(CD8Res$gs$KEGG)
+fwrite((CD8Res$gs$KEGG), file="CD8_KEGG_CD8CD137.csv")
+
+## KEGG Barplot
+CD8Res$gs$KEGG$adjPvalue <- ifelse(CD8Res$gs$KEGG$padj <= 0.05, "significant", "non-significant")
+cols <- c("non-significant" = "grey", "significant" = "red")
+ggplot(CD8Res$gs$KEGG, aes(reorder(pathway, NES), NES, fill = adjPvalue)) +
+  geom_col() +
+  scale_fill_manual(values = cols) +
+  theme(axis.text.y = element_text(size=2)) +
+  coord_flip() +
+  labs(x="Pathway", y="Normalized Enrichment Score",
+  title="KEGG pathways Enrichment Score from CD8_CD137_Status in CD8 Cells") + theme(plot.title.position = "plot", plot.title = element_text(size=8, face="bold"))
+
+## Sig Only KEGG Barplot
+Sig_CD8ResKEGG <- CD8Res$gs$KEGG[padj < 0.05]
+if (nrow(Sig_CD8ResKEGG)==0){ print("No Significant pathways with pAdj < 0.05"
+)} else {
+  ggplot(Sig_CD8ResKEGG, aes(reorder(pathway, NES), NES, fill = adjPvalue)) +
+  geom_col() +
+  scale_fill_manual(values = cols) +
+  theme(axis.text.y = element_text(size=5)) +
+  coord_flip() +
+  labs(x="Pathway", y="Normalized Enrichment Score",
+  title="Significant (pAdj<0.05) KEGG pathways Enrichment Score from CD8_CD137_Status in CD8 Cells") + theme(plot.title.position = "plot", plot.title = element_text(size=8, face="bold"))
+}
+
+```
+
+### REACTOME statistics
+
+```{r}
+datatable(CD8Res$gs$REACTOME)
+fwrite((CD8Res$gs$REACTOME), file="CD8_REACTOME_CD8CD137.csv")
+
+## REACTOME Barplot
+CD8Res$gs$REACTOME$adjPvalue <- ifelse(CD8Res$gs$REACTOME$padj <= 0.05, "significant", "non-significant")
+cols <- c("non-significant" = "grey", "significant" = "red")
+ggplot(CD8Res$gs$REACTOME, aes(reorder(pathway, NES), NES, fill = adjPvalue)) +
+  geom_col() +
+  scale_fill_manual(values = cols) +
+  theme(axis.text.y = element_text(size=2)) +
+  coord_flip() +
+  labs(x="Pathway", y="Normalized Enrichment Score",
+  title="REACTOME pathways Enrichment Score from CD8_CD137_Status in CD8 Cells") + theme(plot.title.position = "plot", plot.title = element_text(size=8, face="bold"))
+
+## Sig Only REACTOME Barplot
+Sig_CD8ResREACTOME <- CD8Res$gs$REACTOME[padj < 0.05]
+if (nrow(Sig_CD8ResREACTOME)==0){ print("No Significant pathways with pAdj < 0.05"
+)} else {
+  ggplot(Sig_CD8ResREACTOME, aes(reorder(pathway, NES), NES, fill = adjPvalue)) +
+  geom_col() +
+  scale_fill_manual(values = cols) +
+  theme(axis.text.y = element_text(size=5)) +
+  coord_flip() +
+  labs(x="Pathway", y="Normalized Enrichment Score",
+  title="Significant (pAdj<0.05) REACTOME pathways Enrichment Score from CD8_CD137_Status in CD8 Cells") + theme(plot.title.position = "plot", plot.title = element_text(size=8, face="bold"))
+}
+
+```
+
+### GO BP statistics
+
+```{r}
+datatable(CD8Res$gs$GOBP)
+fwrite((CD8Res$gs$GOBP), file="CD8_GOBP_CD8CD137.csv")
+
+## GOBP Barplot
+CD8Res$gs$GOBP$adjPvalue <- ifelse(CD8Res$gs$GOBP$padj <= 0.05, "significant", "non-significant")
+cols <- c("non-significant" = "grey", "significant" = "red")
+ggplot(CD8Res$gs$GOBP, aes(reorder(pathway, NES), NES, fill = adjPvalue)) +
+  geom_col() +
+  scale_fill_manual(values = cols) +
+  theme(axis.text.y = element_text(size=2)) +
+  coord_flip() +
+  labs(x="Pathway", y="Normalized Enrichment Score",
+  title="GOBP pathways Enrichment Score from CD8_CD137_Status in CD8 Cells") + theme(plot.title.position = "plot", plot.title = element_text(size=8, face="bold"))
+
+## Sig Only GOBP Barplot
+Sig_CD8ResGOBP <- CD8Res$gs$GOBP[padj < 0.05]
+if (nrow(Sig_CD8ResGOBP)==0){ print("No Significant pathways with pAdj < 0.05"
+)} else {
+  ggplot(Sig_CD8ResGOBP, aes(reorder(pathway, NES), NES, fill = adjPvalue)) +
+  geom_col() +
+  scale_fill_manual(values = cols) +
+  theme(axis.text.y = element_text(size=5)) +
+  coord_flip() +
+  labs(x="Pathway", y="Normalized Enrichment Score",
+  title="Significant (pAdj<0.05) GOBP pathways Enrichment Score from CD8_CD137_Status in CD8 Cells") + theme(plot.title.position = "plot", plot.title = element_text(size=8, face="bold"))
+}
+```
+
+
+### GO MF statistics
+
+```{r}
+datatable(CD8Res$gs$GOMF)
+fwrite((CD8Res$gs$GOMF), file="CD8_GOMF_CD8CD137.csv")
+
+## GOMF Barplot
+CD8Res$gs$GOMF$adjPvalue <- ifelse(CD8Res$gs$GOMF$padj <= 0.05, "significant", "non-significant")
+cols <- c("non-significant" = "grey", "significant" = "red")
+ggplot(CD8Res$gs$GOMF, aes(reorder(pathway, NES), NES, fill = adjPvalue)) +
+  geom_col() +
+  scale_fill_manual(values = cols) +
+  theme(axis.text.y = element_text(size=2)) +
+  coord_flip() +
+  labs(x="Pathway", y="Normalized Enrichment Score",
+  title="GOMF pathways Enrichment Score from CD8_CD137_Status in CD8 Cells") + theme(plot.title.position = "plot", plot.title = element_text(size=8, face="bold"))
+
+## Sig Only GOMF Barplot
+Sig_CD8ResGOMF <- CD8Res$gs$GOMF[padj < 0.05]
+if (nrow(Sig_CD8ResGOMF)==0){ print("No Significant pathways with pAdj < 0.05"
+)} else {
+  ggplot(Sig_CD8ResGOMF, aes(reorder(pathway, NES), NES, fill = adjPvalue)) +
+  geom_col() +
+  scale_fill_manual(values = cols) +
+  theme(axis.text.y = element_text(size=5)) +
+  coord_flip() +
+  labs(x="Pathway", y="Normalized Enrichment Score",
+  title="Significant (pAdj<0.05) GOMF pathways Enrichment Score from CD8_CD137_Status in CD8 Cells") + theme(plot.title.position = "plot", plot.title = element_text(size=8, face="bold"))
+}
+```
+
+# Cibersortx Results
+
+Counts were extracted from the raw counts matrix (unsubset) and uploaded to [Cibersortx](https://cibersortx.stanford.edu). Imputation of cell fractions utilizing the LM22 CIBERSORT DEFAULT reference (signature matrix) to estimate T-cell presence based on gene expression. This was completed using [B-mode batch correction] (B-mode (bulk mode) batch correction removes technical differences between a signature matrix derived from bulk sorted reference profiles (e.g., bulk RNA-Seq or microarrays) and an input set of mixture samples. The technique can also be applied to signature matrices derived from scRNA-Seq platforms, provided that transcripts are measured analogously to bulk mixture expression profiles (e.g., full-length transcripts without UMIs profiled by SMART-Seq2)) and 1000 permutations for significance. 
+
+## Basic Cibersort Results
+### Load Data
+```{r, }
+CIBERSORTx_Res <- read.delim("CIBERSORTx_Job15_Adjusted.txt", row.names=1)
+CIBERSORTx_Res_CellTypes <- CIBERSORTx_Res[,1:22]
+
+#Add Treatment Arm to Results DF
+CD8_CD137_Status <- data.frame(sampAnnotFilter$CD8_CD137_Status)
+rownames(CD8_CD137_Status) <- rownames(sampAnnotFilter)
+colnames(CD8_CD137_Status) <- "CD8_CD137_Status"
+
+CIBERSORTx_Res_CellTypes <- merge(CIBERSORTx_Res_CellTypes,CD8_CD137_Status, by="row.names")
+rownames(CIBERSORTx_Res_CellTypes) <- CIBERSORTx_Res_CellTypes$Row.names
+CIBERSORTx_Res_CellTypes <- CIBERSORTx_Res_CellTypes[,-1]
+```
+
+### Heatmap
+```{r}
+#Display Results as Heatmap
+CibersortAnnotation <- HeatmapAnnotation(Treatment= sampAnnotFilter[,5], CD8_CD137_Status= sampAnnotFilter[,10], Batch= sampAnnotFilter[,26], CellType=sampAnnotFilter[,4] ,col=list(Treatment =
+                                   c('GVAX_CY'='blue',
+                                     'GVAX_CY_NIVO'='red')))
+
+Heatmap(t(CIBERSORTx_Res_CellTypes[,1:22]), column_names_gp = gpar(fontsize = 4), row_names_gp = gpar(fontsize = 8), top_annotation = CibersortAnnotation,clustering_distance_rows = 'pearson', 
+        clustering_distance_columns = 'pearson')
+```
+
+### Barplot
+```{r}
+#Display Results as Barplot
+CIBERSORTx_Res_CellTypes %>% 
+    mutate(Samples = rownames(.)) %>% # add row names as a variable
+    reshape2::melt(.) %>% # melt to long format
+    ggplot(., aes(x = Samples, y = value, fill = variable)) + 
+        geom_bar(stat='identity')+ theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1, size = 5)) + theme(legend.text = element_text(size=5)) +   theme(legend.key.size = unit(.3, 'cm')) + guides(fill=guide_legend(title="Cell Type")) + theme(legend.position = "bottom") + ggtitle("All Samples")
+
+```
+
+## Cibersort Results by CellType
+
+### CD4
+#### Subset Results
+```{r}
+CD4_cells <- rownames(sampAnnotFilter[sampAnnotFilter$Cell_Type=="CD4",])
+CIBERSORTx_Res_CellTypes_CD4 <- CIBERSORTx_Res_CellTypes[rownames(CIBERSORTx_Res_CellTypes) %in% CD4_cells,]
+```
+
+#### Barplot
+```{r}
+CIBERSORTx_Res_CellTypes_CD4 %>% 
+    mutate(Samples = rownames(.)) %>% # add row names as a variable
+    reshape2::melt(.) %>% # melt to long format
+    ggplot(., aes(x = Samples, y = value, fill = variable)) + 
+        geom_bar(stat='identity')+ theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1, size = 5)) + theme(legend.text = element_text(size=5)) +   theme(legend.key.size = unit(.3, 'cm')) + guides(fill=guide_legend(title="Cell Type")) + theme(legend.position = "bottom") + ggtitle("CD4 Samples")
+```
+
+#### Ttest by CD8_CD137_Status
+```{r}
+datatable(CIBERSORTx_Res_CellTypes_CD4 %>% 
+  gather(key = variable, value = value, -CD8_CD137_Status) %>% 
+  group_by(CD8_CD137_Status, variable) %>% 
+  summarise(value = list(value)) %>% 
+  spread(CD8_CD137_Status, value) %>% 
+  group_by(variable) %>% 
+  mutate(p_value = t.test(unlist(High), unlist(Low))$p.value,
+         t_value = t.test(unlist(High), unlist(Low))$statistic))
+```
+
+### CD8
+#### Subset Results
+```{r}
+CD8_cells <- rownames(sampAnnotFilter[sampAnnotFilter$Cell_Type=="CD8",])
+CIBERSORTx_Res_CellTypes_CD8 <- CIBERSORTx_Res_CellTypes[rownames(CIBERSORTx_Res_CellTypes) %in% CD8_cells,]
+```
+
+#### Barplot
+```{r}
+CIBERSORTx_Res_CellTypes_CD8 %>% 
+    mutate(Samples = rownames(.)) %>% # add row names as a variable
+    reshape2::melt(.) %>% # melt to long format
+    ggplot(., aes(x = Samples, y = value, fill = variable)) + 
+        geom_bar(stat='identity')+ theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1, size = 5)) + theme(legend.text = element_text(size=5)) +   theme(legend.key.size = unit(.3, 'cm')) + guides(fill=guide_legend(title="Cell Type")) + theme(legend.position = "bottom") + ggtitle("CD8 Samples")
+```
+
+#### Ttest by CD8_CD137_Status
+```{r}
+datatable(CIBERSORTx_Res_CellTypes_CD8 %>% 
+  gather(key = variable, value = value, -CD8_CD137_Status) %>% 
+  group_by(CD8_CD137_Status, variable) %>% 
+  summarise(value = list(value)) %>% 
+  spread(CD8_CD137_Status, value) %>% 
+  group_by(variable) %>% 
+  mutate(p_value = t.test(unlist(High), unlist(Low))$p.value,
+         t_value = t.test(unlist(High), unlist(Low))$statistic))
+```
+
+### CD19
+#### Subset Results
+```{r}
+CD19_cells <- rownames(sampAnnotFilter[sampAnnotFilter$Cell_Type=="CD19",])
+CIBERSORTx_Res_CellTypes_CD19 <- CIBERSORTx_Res_CellTypes[rownames(CIBERSORTx_Res_CellTypes) %in% CD19_cells,]
+```
+
+#### Barplot
+```{r}
+CIBERSORTx_Res_CellTypes_CD19 %>% 
+    mutate(Samples = rownames(.)) %>% # add row names as a variable
+    reshape2::melt(.) %>% # melt to long format
+    ggplot(., aes(x = Samples, y = value, fill = variable)) + 
+        geom_bar(stat='identity')+ theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1, size = 5)) + theme(legend.text = element_text(size=5)) +   theme(legend.key.size = unit(.3, 'cm')) + guides(fill=guide_legend(title="Cell Type")) + theme(legend.position = "bottom") + ggtitle("CD19 Samples")
+```
+
+### CD11b
+#### Subset Results
+```{r}
+CD11b_cells <- rownames(sampAnnotFilter[sampAnnotFilter$Cell_Type=="CD11b",])
+CIBERSORTx_Res_CellTypes_CD11b <- CIBERSORTx_Res_CellTypes[rownames(CIBERSORTx_Res_CellTypes) %in% CD11b_cells,]
+```
+
+#### Barplot
+```{r}
+CIBERSORTx_Res_CellTypes_CD11b %>% 
+    mutate(Samples = rownames(.)) %>% # add row names as a variable
+    reshape2::melt(.) %>% # melt to long format
+    ggplot(., aes(x = Samples, y = value, fill = variable)) + 
+        geom_bar(stat='identity')+ theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1, size = 5)) + theme(legend.text = element_text(size=5)) +   theme(legend.key.size = unit(.3, 'cm')) + guides(fill=guide_legend(title="Cell Type")) + theme(legend.position = "bottom") + ggtitle("CD11b Samples")
+```
+
+# TCR Results
+Volume and Clones were extracted from the repExplore function of [IMMUNARCH]. Volume=calculates the number of unique clonotypes in the input data. Clones=returns the number of clones (i.e., cells) per input repertoire.
+
+## Load Results from TCR Script
+```{r}
+load("tcrcloneinfo.rda")
+```
+
+## Differential expression w TCR counts by cell type
+
+For each cell type, we run differential expression analysis with [DESeq2](https://genomebiology.biomedcentral.com/articles/10.1186/s13059-014-0550-8), including batch as a covariate in our model. Estimated fold changes are shrunk with `apeglm` using `lfcShrink` to account for the variation in the samples in this dataset.
+
+```{r}
+DETCRByCellType <- function(CellType, TCR) {
+  sampByCell <- sampAnnotFilter[sampAnnotFilter$Cell_Type == CellType & !is.na(sampAnnotFilter$CD8_CD137_Status),]
+  sampIds <- rownames(sampByCell)
+  
+  ##Extract CountData
+  countData = round(exprsDatFilter)[,colnames(exprsDatFilter) %in% sampIds]
+  ##Extract sampleNames
+  countNames = gsub("X.._12","12",colnames(countData))
+  countNames = gsub("X","",countNames)
+  countNames = gsub("_",".",countNames)
+  ##Order TCR by countNames
+  TCR <- as.data.frame(TCR)
+  rownames(TCR) <- TCR$SampleNames
+  TCR <- TCR[countNames,]
+  TCR <- t(TCR)
+  Volume <- as.numeric(TCR[2,])
+  Clones <- as.numeric(TCR[3,])
+  ##Append to Counts
+  countData <- rbind(Volume,Clones,countData)
+  
+  ##Treatment OS
+  dds <- DESeqDataSetFromMatrix(countData = countData, 
+                              colData = sampByCell, 
+                              design=~CD8_CD137_Status+batch)
+  dds <- DESeq(dds)
+  res <- results(dds, name="CD8_CD137_Status_Low_vs_High")
+  res <- lfcShrink(dds, coef="CD8_CD137_Status_Low_vs_High", 
+                   res=res)
+  res <- res[!is.na(res$padj),]
+  
+  return(res)
+}
+
+```
+
+##CD8 Cells
+```{r}
+CD8TCR_DERes <- DETCRByCellType("CD8", cd8TCR)
+
+datatable(data.frame(CD8TCR_DERes[1:2,]))
+```

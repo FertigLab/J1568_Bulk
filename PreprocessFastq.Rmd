@@ -1,0 +1,244 @@
+---
+title: "Alignment and read quantification from fastq files"
+author: "Elana Fertig"
+date: '2022-05-10'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F)
+```
+
+# R libraries and session info
+
+```{r}
+library('DT')
+library (rhdf5) 
+library (tximport) 
+library (readr) 
+library(biomaRt) 
+sessionInfo()
+```
+# Obtaining human genome references for pseudoalignment and quantification
+
+The hg38 cDNA reference (release 87) was obtained from [ensembl](http://ftp.ensembl.org/pub/release-87/fasta/homo_sapiens/cdna/). We use `r system('./kallisto//kallisto version')` to create a gene index for pseudoalignment with [kallisto](https://www.nature.com/articles/nbt.3519).
+
+```{r}
+## create kallisto gene index
+if (!file.exists('transcripts.idx')) {
+  system('./kallisto/kallisto index -i transcripts.idx Homo_sapiens.GRCh38.cdna.all.fa.gz')
+}
+
+file.copy('transcripts.idx', '../JHU - Part 1/')
+file.copy('transcripts.idx', '../JHU - Part 2/')
+```
+
+We use ensembl 95 from biomart to create the mapping from transcript ids to gene symbols for quantification of read counts with [tximport](https://doi.org/10.12688/f1000research.7563.1).
+
+```{r}
+## create transcript-id, Gene Symbol mapping for tximport
+## Using Ensembl 95 for gene quantification
+human = useMart("ensembl", 
+                dataset ="hsapiens_gene_ensembl",    host='http://jan2019.archive.ensembl.org')
+genes = getBM(attributes = c("hgnc_symbol", "ensembl_transcript_id", "transcript_version"), 
+              mart = human, uniqueRows=T)
+
+## extract genes associated with transcript ids
+transcript_ids <-  paste( 
+  genes$ensembl_transcript_id, 
+  genes$transcript_version, sep=".")
+
+genes<-cbind(transcript_ids, genes)
+
+genes<-genes[,-c(3,4)]
+
+genesNoBlank <- genes[genes$hgnc_symbol != "", ]
+
+save(genes, file='transcript2GeneEnsembl95.Rda')
+```
+
+# Preprocessing samples from batch 1
+
+## obtaining all samples from batch 1 through the mdchecksums file
+
+```{r}
+Batch1 <- read.table('../JHU - Part 1/170912-134154/md5sum.txt',
+                     sep=" ")
+fastqFiles <- grep('fastq',sub('./FASTQ/','',Batch1[,3]),value=T)
+fastqTable <- data.frame( t(sapply(strsplit( 
+  fastqFiles, split="[/_]"), function(x){x})))
+row.names(fastqTable) <- file.path('170912-134154/FASTQ',
+                                   fastqFiles)
+
+fastqTable$ID <- sprintf('X%02d_%d_%03d_%s',
+        as.numeric(as.character(fastqTable$X2)), 
+        as.numeric(as.character(fastqTable$X3)), 
+        as.numeric(as.character(fastqTable$X4)), 
+        sub('Plus','',fastqTable$X5))
+
+
+sample2Fastq <- tapply(row.names(fastqTable),
+                         fastqTable$ID, unique)
+```
+
+## Psuedoalignment of batch 1
+
+```{r, message=FALSE}
+wd <- getwd()
+setwd('../JHU - Part 1/')
+
+for (s in names(sample2Fastq)) {
+  message(s)
+  if (file.exists(file.path(s,
+                            'abundance.h5'))) {
+    next 
+  }
+  
+
+  system(paste('./kallisto//kallisto',
+               'quant -t4 -i ./transcripts.idx -o', 
+               s,
+               paste(sample2Fastq[[s]],
+                     collapse=" ")))
+
+}
+
+setwd(wd)
+```
+
+# Preprocessing data from batch 2
+
+```{r}
+Batch2 <- read.table('../JHU - Part 2/md5sum.txt',
+                     sep=" ")
+fastqFiles <- grep('fastq',sub('./FASTQ/','',Batch2[,3]),
+                   value=T)
+fastqTable <- t(sapply(strsplit(fastqFiles, 
+                                split="[/_]"),
+                       function(x){x}))
+
+fastqTable <- data.frame(fastqTable)
+row.names(fastqTable) <- fastqFiles
+fastqTable$ID <- paste0('X', 
+                        apply(fastqTable[,4:6],
+                              1,
+                       paste,collapse="_"))
+
+sample2Fastq <- tapply(row.names(fastqTable),
+                         fastqTable$ID, unique)
+```
+
+## Psuedoalignment of batch 2
+
+```{r, message=FALSE}
+wd <- getwd()
+setwd('../JHU - Part 2/')
+
+for (s in names(sample2Fastq)) {
+  message(s)
+  if (file.exists(file.path(s,
+                            'abundance.h5'))) {
+    next 
+  }
+  
+
+  system(paste('./kallisto//kallisto',
+               'quant -t4 -i ./transcripts.idx -o', 
+               s,
+               paste(sample2Fastq[[s]],
+                     collapse=" ")))
+
+}
+
+setwd(wd)
+```
+
+# Transcript quantification with tximport
+
+## Batch 1
+
+```{r}
+txi.tx.all <- tximport(grep('abundance.h5',
+  list.files('../JHU - Part 1/', recursive = T,
+             full.names = T), value=T),
+  type='kallisto', 
+  countsFromAbundance = "lengthScaledTPM",
+  txOut=TRUE)
+
+txi.tx.genes.all <- summarizeToGene(txi.tx.all,
+                                    genes, countsFromAbundance = "lengthScaledTPM")
+colnames(txi.tx.genes.all$counts) <- dirname(grep('abundance.h5',
+     list.files('../JHU - Part 1/', 
+                recursive = T),value=T))
+
+# output data into an R object and csv file for subsequent analysis
+
+save(txi.tx.genes.all,
+     file='NewGeneCountsBatch1.Rda')
+write.table(cbind(Gene=row.names(txi.tx.genes.all$counts),
+                  txi.tx.genes.all$counts), sep="\t",
+            row.names=F, file='NewGeneCountsBatch1.txt')
+
+```
+
+## Batch 2
+
+```{r}
+txi.tx.all <- tximport(grep('abundance.h5',
+  list.files('../JHU - Part 2/', recursive = T,
+             full.names = T), value=T),
+  type='kallisto', 
+  countsFromAbundance = "lengthScaledTPM",
+  txOut=TRUE)
+
+txi.tx.genes.all <- summarizeToGene(txi.tx.all,
+                                    genes, countsFromAbundance = "lengthScaledTPM")
+colnames(txi.tx.genes.all$counts) <- dirname(grep('abundance.h5',
+     list.files('../JHU - Part 2/', 
+                recursive = T),value=T))
+
+# output data into an R object and csv file for subsequent analysis
+
+save(txi.tx.genes.all,
+     file='NewGeneCountsBatch2.Rda')
+write.table(cbind(Gene =row.names(txi.tx.genes.all$counts),
+                  txi.tx.genes.all$counts),
+            sep="\t",
+            row.names=F, file='NewGeneCountsBatch2.txt')
+
+```
+
+## Combined batches
+
+```{r, message=FALSE}
+files <- grep('abundance.h5',
+  c(list.files('../JHU - Part 1', recursive = T,
+             full.names = T),
+    list.files('../JHU - Part 2', recursive = T,
+             full.names = T)), value=T)
+
+message(files)
+```
+
+```{r}
+
+
+txi.tx.all <- tximport(files,
+  type='kallisto', 
+  countsFromAbundance = "lengthScaledTPM",
+  txOut=TRUE)
+
+txi.tx.genes.all <- summarizeToGene(txi.tx.all,
+                                    genesNoBlank, countsFromAbundance = "lengthScaledTPM")
+colnames(txi.tx.genes.all$counts) <- basename(dirname(files))
+
+# output data into an R object and csv file for subsequent analysis
+
+save(txi.tx.genes.all,
+     file='NewGeneCounts.Rda')
+write.table(cbind(Gene=row.names(txi.tx.genes.all$counts),
+                  txi.tx.genes.all$counts),
+            sep="\t",
+            row.names=F, file='NewGeneCounts.txt')
+```
+

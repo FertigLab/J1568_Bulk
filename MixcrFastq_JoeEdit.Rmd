@@ -1,0 +1,120 @@
+---
+title: "Estimation of T and BCR from MixCR from fastq files"
+author: "Elana Fertig & Joe Tandurella"
+date: '2022-05-25'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F)
+```
+
+# R libraries and session info
+
+```{r}
+sessionInfo()
+```
+
+# Preprocessing samples from batch 1
+
+## obtaining all samples from batch 1 through the mdchecksums file
+
+```{r}
+Batch1 <- read.table('../JHU - Part 1/170912-134154/md5sum.txt',
+                     sep=" ")
+fastqFiles <- grep('fastq',sub('./FASTQ/','',Batch1[,3]),value=T)
+fastqTable <- data.frame( t(sapply(strsplit( 
+  fastqFiles, split="[/_]"), function(x){x})))
+row.names(fastqTable) <- file.path('170912-134154/FASTQ',
+                                   fastqFiles)
+
+# exclude CD11b files from MixCR analysis
+fastqTable <- fastqTable[fastqTable$X5 != 'CD11bPlus', ]
+
+fastqTable$ID <- apply(fastqTable[,3:6], 1, 
+                       paste, collapse=".")
+
+
+sample2Fastq <- tapply(row.names(fastqTable),
+                         fastqTable$ID, unique)
+```
+
+## Running mixcr of batch 1
+
+```{r, message=FALSE}
+wd <- getwd()
+setwd('../JHU - Part 1/')
+
+for (s in names(sample2Fastq)) {
+  message(s)
+  
+  if (file.exists(paste(s,'clones.txt',sep="_"))) next
+
+  paste('cat', paste(grep('R1',
+        sample2Fastq[[s]], value=T),
+                            collapse=" "), '>', 
+               paste0(s,'_1.fastq.gz'))
+  paste('cat', paste(grep('R2',
+        sample2Fastq[[s]], value=T),
+                            collapse=" "), '>', 
+               paste0(s,'_2.fastq.gz'))
+  
+    paste('mixcr analyze shotgun --starting-material rna -s hsa --assemble-partial-rounds 2',
+               paste0(s,'_1.fastq.gz'), 
+               paste0(s,'_2.fastq.gz'),paste0(s,"_MIXCRres"))
+  }
+
+setwd(wd)
+```
+
+## Running mixcr of batch 2
+
+
+```{r}
+Batch2 <- read.table('../JHU - Part 2/md5sum.txt',
+                     sep=" ")
+fastqFiles <- grep('fastq',sub('./FASTQ/','',Batch2[,3]),
+                   value=T)
+fastqTable <- t(sapply(strsplit(fastqFiles, 
+                                split="[/_]"),
+                       function(x){x}))
+
+fastqTable <- data.frame(fastqTable)
+row.names(fastqTable) <- fastqFiles
+fastqTable$ID <- apply(fastqTable[,3:6], 1,
+                       paste,collapse=".")
+fastqTable <- fastqTable[fastqTable$X6 != 'CD11b', ]
+
+sample2Fastq <- tapply(row.names(fastqTable),
+                         fastqTable$ID, unique)
+```
+
+
+```{r, message=FALSE}
+wd <- getwd()
+setwd('../JHU - Part 2/')
+
+for (s in names(sample2Fastq)) {
+  message(s)
+  
+  if (file.exists(paste(s,'clones.txt',sep="_"))) next
+
+  system(paste('cat', paste(grep('1.fastq',
+        sample2Fastq[[s]], value=T),
+                            collapse=" "), '>', 
+               paste0(s,'_1.fastq.gz')))
+  system(paste('cat', paste(grep('2.fastq',
+        sample2Fastq[[s]], value=T),
+                            collapse=" "), '>', 
+               paste0(s,'_2.fastq.gz')))
+  
+    system(paste('mixcr analyze shotgun --starting-material rna -s hsa --assemble-partial-rounds 2',
+               paste0(s,'_1.fastq.gz'), 
+               paste0(s,'_2.fastq.gz'), paste0(s,"_MIXCRres")))
+}
+
+setwd(wd)
+```
+
+
+

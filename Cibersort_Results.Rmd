@@ -1,0 +1,151 @@
+---
+title: "Cibersort_Results"
+author: "Joe"
+date: "6/9/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+##Load Packages
+```{r}
+library(ggplot2)
+library(tidyverse)
+library(dplyr)
+library(tidyr)
+library(ComplexHeatmap)
+```
+
+##Load SampAnnot
+```{r}
+load("~/Documents/Lei/sampAnnotFilter.rda")
+
+treatments <- data.frame(sampAnnotFilter$Treatment)
+rownames(treatments) <- rownames(sampAnnotFilter)
+colnames(treatments) <- "Treatments"
+
+CD4_cells <- rownames(sampAnnotFilter[sampAnnotFilter$Cell_Type=="CD4",])
+CD8_cells <- rownames(sampAnnotFilter[sampAnnotFilter$Cell_Type=="CD8",])
+CD11b_cells <- rownames(sampAnnotFilter[sampAnnotFilter$Cell_Type=="CD11b",])
+CD19_cells <- rownames(sampAnnotFilter[sampAnnotFilter$Cell_Type=="CD19",])
+```
+
+##Load in Cibersort Results
+```{r}
+CIBERSORTx_Res <- read.delim("~/Documents/Lei/CIBERSORTx_Job15_Adjusted.txt", row.names=1)
+CIBERSORTx_Res_CellTypes <- CIBERSORTx_Res[,1:22]
+
+##Add treatment arm from SampAnnot
+CIBERSORTx_Res_CellTypes <- merge(CIBERSORTx_Res_CellTypes,treatments, by="row.names")
+rownames(CIBERSORTx_Res_CellTypes) <- CIBERSORTx_Res_CellTypes$Row.names
+CIBERSORTx_Res_CellTypes <- CIBERSORTx_Res_CellTypes[,-1]
+
+
+##Subset by Cell Type
+CIBERSORTx_Res_CellTypes_CD8 <- CIBERSORTx_Res_CellTypes[rownames(CIBERSORTx_Res_CellTypes) %in% CD8_cells,]
+CIBERSORTx_Res_CellTypes_CD4 <- CIBERSORTx_Res_CellTypes[rownames(CIBERSORTx_Res_CellTypes) %in% CD4_cells,]
+CIBERSORTx_Res_CellTypes_CD11b <- CIBERSORTx_Res_CellTypes[rownames(CIBERSORTx_Res_CellTypes) %in% CD11b_cells,]
+CIBERSORTx_Res_CellTypes_CD19 <- CIBERSORTx_Res_CellTypes[rownames(CIBERSORTx_Res_CellTypes) %in% CD19_cells,]
+
+```
+
+##Plot results as barplot
+```{r}
+pdf(file="~/Documents/Lei/Cibersort_StackedBarplot.pdf")
+##All
+CIBERSORTx_Res_CellTypes %>% 
+    mutate(Samples = rownames(.)) %>% # add row names as a variable
+    reshape2::melt(.) %>% # melt to long format
+    ggplot(., aes(x = Samples, y = value, fill = variable)) + 
+        geom_bar(stat='identity')+ theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1, size = 5)) + theme(legend.text = element_text(size=5)) +   theme(legend.key.size = unit(.3, 'cm')) + guides(fill=guide_legend(title="Cell Type")) + theme(legend.position = "bottom") + ggtitle("All Samples")
+##CD8
+CIBERSORTx_Res_CellTypes_CD8 %>% 
+    mutate(Samples = rownames(.)) %>% # add row names as a variable
+    reshape2::melt(.) %>% # melt to long format
+    ggplot(., aes(x = Samples, y = value, fill = variable)) + 
+        geom_bar(stat='identity')+ theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1, size = 5)) + theme(legend.text = element_text(size=5)) +   theme(legend.key.size = unit(.3, 'cm')) + guides(fill=guide_legend(title="Cell Type")) + theme(legend.position = "bottom") + ggtitle("CD8 Samples")
+##CD4
+CIBERSORTx_Res_CellTypes_CD4 %>% 
+    mutate(Samples = rownames(.)) %>% # add row names as a variable
+    reshape2::melt(.) %>% # melt to long format
+    ggplot(., aes(x = Samples, y = value, fill = variable)) + 
+        geom_bar(stat='identity')+ theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1, size = 5)) + theme(legend.text = element_text(size=5)) +   theme(legend.key.size = unit(.3, 'cm')) + guides(fill=guide_legend(title="Cell Type")) + theme(legend.position = "bottom") + ggtitle("CD4 Samples")
+##CD11b
+CIBERSORTx_Res_CellTypes_CD11b %>% 
+    mutate(Samples = rownames(.)) %>% # add row names as a variable
+    reshape2::melt(.) %>% # melt to long format
+    ggplot(., aes(x = Samples, y = value, fill = variable)) + 
+        geom_bar(stat='identity')+ theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1, size = 5)) + theme(legend.text = element_text(size=5)) +   theme(legend.key.size = unit(.3, 'cm')) + guides(fill=guide_legend(title="Cell Type")) + theme(legend.position = "bottom") + ggtitle("CD11b Samples")
+##CD19
+CIBERSORTx_Res_CellTypes_CD19 %>% 
+    mutate(Samples = rownames(.)) %>% # add row names as a variable
+    reshape2::melt(.) %>% # melt to long format
+    ggplot(., aes(x = Samples, y = value, fill = variable)) + 
+        geom_bar(stat='identity')+ theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1, size = 5)) + theme(legend.text = element_text(size=5)) +   theme(legend.key.size = unit(.3, 'cm')) + guides(fill=guide_legend(title="Cell Type")) + theme(legend.position = "bottom") + ggtitle("CD19 Samples")
+dev.off()
+```
+##Plot Results as Heatmap
+
+```{r}
+Annotation <- HeatmapAnnotation(Treatment= sampAnnotFilter[,5], OS= sampAnnotFilter[,8], Batch= sampAnnotFilter[,25], CellType=sampAnnotFilter[,4] ,col=list(Treatment =
+                                   c('GVAX_CY'='blue',
+                                     'GVAX_CY_NIVO'='red')))
+
+pdf(file="~/Documents/Lei/Cibersort_Heatmap.pdf")
+Heatmap(t(CIBERSORTx_Res_CellTypes[,1:22]), column_names_gp = gpar(fontsize = 4), row_names_gp = gpar(fontsize = 8), top_annotation = Annotation,clustering_distance_rows = 'pearson', 
+        clustering_distance_columns = 'pearson')
+dev.off()
+```
+
+
+
+##T.TESTS of Cell Type proportion
+```{r}
+##CD8 Cells
+CD8_ttestres <- CIBERSORTx_Res_CellTypes_CD8 %>% 
+  gather(key = variable, value = value, -Treatments) %>% 
+  group_by(Treatments, variable) %>% 
+  summarise(value = list(value)) %>% 
+  spread(Treatments, value) %>% 
+  group_by(variable) %>% 
+  mutate(p_value = t.test(unlist(GVAX_CY), unlist(GVAX_CY_NIVO))$p.value,
+         t_value = t.test(unlist(GVAX_CY), unlist(GVAX_CY_NIVO))$statistic)
+
+##CD4 Cells
+CD4_ttestres <- CIBERSORTx_Res_CellTypes_CD4 %>% 
+  gather(key = variable, value = value, -Treatments) %>% 
+  group_by(Treatments, variable) %>% 
+  summarise(value = list(value)) %>% 
+  spread(Treatments, value) %>% 
+  group_by(variable) %>% 
+  mutate(p_value = t.test(unlist(GVAX_CY), unlist(GVAX_CY_NIVO))$p.value,
+         t_value = t.test(unlist(GVAX_CY), unlist(GVAX_CY_NIVO))$statistic)
+
+##CD11b Cells
+CD11b_ttestres <- CIBERSORTx_Res_CellTypes_CD11b %>% 
+  gather(key = variable, value = value, -Treatments) %>% 
+  group_by(Treatments, variable) %>% 
+  summarise(value = list(value)) %>% 
+  spread(Treatments, value) %>% 
+  group_by(variable) %>% 
+  mutate(p_value = t.test(unlist(GVAX_CY), unlist(GVAX_CY_NIVO))$p.value,
+         t_value = t.test(unlist(GVAX_CY), unlist(GVAX_CY_NIVO))$statistic)
+
+##CD19 Cells
+CD19_ttestres <- CIBERSORTx_Res_CellTypes_CD19 %>% 
+  gather(key = variable, value = value, -Treatments) %>% 
+  group_by(Treatments, variable) %>% 
+  summarise(value = list(value)) %>% 
+  spread(Treatments, value) %>% 
+  group_by(variable) %>% 
+  mutate(p_value = t.test(unlist(GVAX_CY), unlist(GVAX_CY_NIVO))$p.value,
+         t_value = t.test(unlist(GVAX_CY), unlist(GVAX_CY_NIVO))$statistic)
+
+save(CD8_ttestres,CD4_ttestres,CD11b_ttestres,CD19_ttestres, file="CellType_cibersort_ttestres_bytreatment.rda")
+
+```
+
+
+

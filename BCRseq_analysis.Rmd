@@ -1,0 +1,206 @@
+---
+title: "BCRseq_analysis - Heavy chain"
+author: "Joe and Janelle"
+date: "6/21/2022"
+knit: (function(inputFile, encoding) {
+  rmarkdown::render(inputFile, encoding = encoding, output_dir = "~/OneDrive - Johns Hopkins/JHU_PDAC_Collaboration/Analysis_HTMLs/") })
+output:
+  html_document:
+    toc: true
+    theme: united
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Load Packages
+```{r}
+library(immunarch)
+library(readxl)
+library(ggplot2)
+library(ggpubr)
+sessionInfo()
+```
+
+## Load MIXCR Results -- https://immunarch.com/articles/web_only/load_mixcr.html
+```{r}
+#Replace with the path to the folder with your processed MiXCR data.
+mixcr_path = "~/OneDrive - Johns Hopkins/JHU_PDAC_Collaboration/MIXCR_Res"
+
+##CD19
+CD19_files = intersect(list.files(mixcr_path, recursive = T,full.names = T, pattern =".CD19"),list.files(mixcr_path, recursive = T,full.names = T, pattern =".clonotypes.IGH"))
+CD19_immdata_mixcr <- repLoad(CD19_files)
+###Save
+saveRDS(CD19_immdata_mixcr, file="CD19_immdata_igh.rds")
+
+
+```
+
+## Load SampInfo
+```{r}
+load("sampAnnotFilter.Rda")
+sampAnnot <- sampAnnotFilter
+sampAnnot$Treatment[sampAnnot$Treatment == 'GVAX_CY_Nivo'] <- 
+  'GVAX_CY_NIVO'
+rownames(sampAnnot) <- make.names(sampAnnot$Sample_id)
+sampAnnot$SampleNames <- paste(sampAnnot$PatientID, sampAnnot$Cell_Type,sep="_")
+sampAnnot$SampleNames <- gsub("_",".", sampAnnot$SampleNames)
+
+#CD19
+##Extract SampleNames from MIXCR$meta
+filenames <- CD19_immdata_mixcr$meta$Sample
+#Remove batch1 additions
+samplenames = gsub("Plus.+","",filenames)
+#Remove batch2 additions
+samplenames = gsub("_.+","",samplenames)
+samplenames = gsub("B.","",samplenames)
+
+CD19_immdata_mixcr$meta$SampleNames <- samplenames
+
+##Extract Patient Names
+samplenames = gsub(".CD19","",samplenames)
+CD19_immdata_mixcr$meta$PatientID <- samplenames
+
+##Subset to be samples in sampAnnot
+CD19_immdata_mixcr <- repFilter(CD19_immdata_mixcr, "by.meta", list(SampleNames = include(sampAnnot$SampleNames)))
+
+##Merge SampAnnot w/ Meta
+CD19_immdata_mixcr$meta <- merge(CD19_immdata_mixcr$meta, sampAnnot, by="SampleNames")
+
+##Save
+saveRDS(CD19_immdata_mixcr, file="CD19_immdata_igh_wMETA.rds")
+
+```
+
+
+## CD19 Basic Immunarch Plots -- pdf saved CD19_immdata_mixcr_igh_sampAnnotFilter.pdf
+```{r, include=FALSE}
+
+pdf(file = paste0("CD19_immdata_mixcr_igh_sampAnnotFilter_ttest.pdf"))
+
+##assign data
+dat= get("CD19_immdata_mixcr")
+
+##Clones by Annotation
+print(tryCatch({vis(repExplore(dat$data, .method = "clones"), .by = c("Treatment"), .meta = dat$meta, .test=F) + ggtitle("Number of CD19 B cells by Treatment") + labs(x= "Treatment") + stat_compare_means(comparisons = list(c("GVAX_CY", "GVAX_CY_NIVO")), method = "t.test")}, error= function(err){}))
+print(tryCatch({vis(repExplore(dat$data, .method = "clones"), .by = c("OS"), .meta = dat$meta, .test=F) + ggtitle("Number of CD19 B cells by OS") + labs(x= "OS")+ stat_compare_means(comparisons = list(c("<2y", ">2y")), method = "t.test")}, error= function(err){}))
+print(tryCatch({vis(repExplore(dat$data, .method = "clones"), .by = c("CD66b_Gr_Status"), .meta = dat$meta, .test=F) + ggtitle("Number of CD19 B cells by CD66b_Gr_Status") + labs(x= "CD66b_Gr_Status") + stat_compare_means(comparisons = list(c("High", "Low")), method = "t.test")}, error= function(err){}))
+print(tryCatch({vis(repExplore(dat$data, .method = "clones"), .by = c("Treg_Status"), .meta = dat$meta, .test=F) + ggtitle("Number of CD19 B cells by Treg_Status")  + labs(x= "Treg_Status") + stat_compare_means(comparisons = list(c("High", "Low")), method = "t.test")}, error= function(err){}))
+print(tryCatch({vis(repExplore(dat$data, .method = "clones"), .by = c("IL17_Signaling_Status"), .meta = dat$meta, .test=F) + ggtitle("Number of CD19 B cells by IL17_Signaling_Status")  + labs(x= "IL17_Signaling_Status") + stat_compare_means(comparisons = list(c("High", "Low")), method = "t.test")}, error= function(err){}))
+print(tryCatch({vis(repExplore(dat$data, .method = "clones"), .by = c("CD4_Th17_Status"), .meta = dat$meta, .test=F) + ggtitle("Number of CD19 B cells by CD4_Th17_Status")  + labs(x= "CD4_Th17_Status") + stat_compare_means(comparisons = list(c("High", "Low")), method = "t.test")}, error= function(err){}))
+print(tryCatch({vis(repExplore(dat$data, .method = "clones"), .by = c("CD8_CD137_Status"), .meta = dat$meta, .test=F) + ggtitle("Number of CD19 B cells by CD8_CD137_Status")  + labs(x= "CD8_CD137_Status") + stat_compare_means(comparisons = list(c("High", "Low")), method = "t.test")}, error= function(err){}))
+print(vis(repExplore(dat$data), .method = "volume")+ scale_x_discrete(labels=dat$meta$Publication_id))
+print(vis(repExplore(dat$data))+ scale_x_discrete(labels=dat$meta$Publication_id))
+
+
+##Clonal Proportion plots
+print(vis(repClonality(dat$data, .method = "clonal.prop")) + scale_x_discrete(labels=dat$meta$Publication_id))
+print(tryCatch({vis(repExplore(dat$data, .method = "clonal.prop"), .by = c("Treatment"), .meta = dat$meta, .test=F) + labs(x= "Treatment") + stat_compare_means(comparisons = list(c("GVAX_CY", "GVAX_CY_NIVO")), method = "t.test")}, error= function(err){}))
+print(tryCatch({vis(repExplore(dat$data, .method = "clonal.prop"), .by = c("OS"), .meta = dat$meta, .test=F) + labs(x= "OS")+ stat_compare_means(comparisons = list(c("<2y", ">2y")), method = "t.test")}, error= function(err){}))
+print(tryCatch({vis(repExplore(dat$data, .method = "clonal.prop"), .by = c("CD66b_Gr_Status"), .meta = dat$meta, .test=F) + labs(x= "CD66b_Gr_Status") + stat_compare_means(comparisons = list(c("High", "Low")), method = "t.test")}, error= function(err){}))
+print(tryCatch({vis(repExplore(dat$data, .method = "clonal.prop"), .by = c("Treg_Status"), .meta = dat$meta, .test=F) + labs(x= "Treg_Status") + stat_compare_means(comparisons = list(c("High", "Low")), method = "t.test")}, error= function(err){}))
+print(tryCatch({vis(repExplore(dat$data, .method = "clonal.prop"), .by = c("IL17_Signaling_Status"), .meta = dat$meta, .test=F) + labs(x= "IL17_Signaling_Status") + stat_compare_means(comparisons = list(c("High", "Low")), method = "t.test")}, error= function(err){}))
+print(tryCatch({vis(repExplore(dat$data, .method = "clonal.prop"), .by = c("CD4_Th17_Status"), .meta = dat$meta, .test=F) + labs(x= "CD4_Th17_Status") + stat_compare_means(comparisons = list(c("High", "Low")), method = "t.test")}, error= function(err){}))
+print(tryCatch({vis(repExplore(dat$data, .method = "clonal.prop"), .by = c("CD8_CD137_Status"), .meta = dat$meta, .test=F) + labs(x= "CD8_CD137_Status") + stat_compare_means(comparisons = list(c("High", "Low")), method = "t.test")}, error= function(err){}))
+
+##Top clonal proportion
+print(tryCatch({vis(repClonality(dat$data, .method = "top", .head = c(10, 100, 1000, 3000, 10000)), .by = "Treatment", .meta = dat$meta)}, error=function(err){}))
+print(tryCatch({vis(repClonality(dat$data, .method = "top", .head = c(10, 100, 1000, 3000, 10000)), .by = "OS", .meta = dat$meta)}, error=function(err){}))
+print(tryCatch({vis(repClonality(dat$data, .method = "top", .head = c(10, 100, 1000, 3000, 10000)), .by = "CD66b_Gr_Status", .meta = dat$meta)}, error= function(err){}))
+print(tryCatch({vis(repClonality(dat$data, .method = "top", .head = c(10, 100, 1000, 3000, 10000)), .by = "Treg_Status", .meta = dat$meta)}, error= function(err){}))
+print(tryCatch({vis(repClonality(dat$data, .method = "top", .head = c(10, 100, 1000, 3000, 10000)), .by = "IL17_Signaling_Status", .meta = dat$meta)}, error= function(err){}))
+print(tryCatch({vis(repClonality(dat$data, .method = "top", .head = c(10, 100, 1000, 3000, 10000)), .by = "CD4_Th17_Status", .meta = dat$meta)}, error= function(err){}))
+print(tryCatch({vis(repClonality(dat$data, .method = "top", .head = c(10, 100, 1000, 3000, 10000)), .by = "CD8_CD137_Status", .meta = dat$meta)}, error= function(err){}))
+
+##Repertoire overlap
+print(tryCatch({vis(repOverlap(dat$data, .method = "public"), .verbose = F) + labs(title="Public") + scale_x_discrete(labels=dat$meta$Publication_id) + scale_y_discrete(labels=rev(dat$meta$Publication_id))}, error=function(err){}))
+print(tryCatch({vis(repOverlap(dat$data, .method = "morisita", .verbose = F), .signif.digits = 2) + labs(title="Morisita") + scale_x_discrete(labels=dat$meta$Publication_id) + scale_y_discrete(labels=rev(dat$meta$Publication_id))}, error=function(err){}))
+
+##Repertoire Diversity
+# Chao1 diversity measure
+print(vis(repDiversity(dat$data, "chao1")) +scale_x_discrete(labels=dat$meta$Publication_id))
+# Hill numbers
+print(vis(repDiversity(dat$data, "hill"))+scale_fill_discrete(labels=dat$meta$Publication_id))
+# D50
+print(vis(repDiversity(dat$data, "d50"))+scale_x_discrete(labels=dat$meta$Publication_id))
+# Ecological diversity measure
+print(vis(repDiversity(dat$data, "div"))+scale_x_discrete(labels=dat$meta$Publication_id))
+
+dev.off()
+```
+
+## CD19 Clonality -- JMM July 14, 2022 -- pdf saved CD19_immdata_mixcr_igh_clonality.pdf
+```{r}
+##B cells
+####Clonality: Normalized Shannon's Entropy (Shannon's equitability- measure of evenness)
+#Not so reliable when there are few (<100) cells
+#between 0 and 1, lower value indicates more evenness (more polyclonal), higher value indicates less evenness (1 is monoclonal)
+div_div <- repDiversity(coding(CD19_immdata_mixcr$data), "div", .q = 1, .col ="aa") #.q = 1 gives you exp shannon
+div_div$clonotypes <- 0
+#convert from true diversity back to Shannon entropy
+div_div$Value <- log(div_div$Value)
+#Get number of clonotypes per sample to calculate normalized Shannon entropy
+for (i in 1:length(CD19_immdata_mixcr[[1]])){
+  sample <- names(CD19_immdata_mixcr[[1]][i])
+  test <- data.frame(coding(CD19_immdata_mixcr[[1]][i]))
+  clonotypes <- length(unique(test[,4]))##make it based on amino acid clonotypes
+  div_div$clonotypes[i] <- clonotypes
+}
+
+#div_div$clonotypes <- div_div$clonotypes + 0.1 #to avoid 0 values
+#Calculate normalized Shannon entropy 
+div_div$lnClonotypes <- log(div_div$clonotypes)
+div_div$shannon_norm <- div_div$Value/div_div$lnClonotypes
+div_div$Value <- 1-div_div$shannon_norm
+
+##Assign clonality to metadata
+clonalityDF <- div_div[,c(1:2)]
+colnames(clonalityDF) <- c("Sample", "clonality")
+CD19_immdata_mixcr$meta <- merge(CD19_immdata_mixcr$meta, clonalityDF, by = "Sample")
+
+##Plots
+pdf(file="CD19_immdata_mixcr_igh_clonality.pdf")
+
+vis(div_div, .by = "Treatment", .meta = CD19_immdata_mixcr$meta, .test = T) + ggtitle("Clonality by Treatment")+ylab("Clonality")+ylim(0,1)
+#p=0.7
+wilcox.test(CD19_immdata_mixcr$meta$clonality ~ CD19_immdata_mixcr$meta$Treatment, exact = F)
+#p=0.6485
+t.test(CD19_immdata_mixcr$meta$clonality ~ CD19_immdata_mixcr$meta$Treatment, exact = F)
+#0.6987
+vis(div_div, .by = "Treatment", .meta = CD19_immdata_mixcr$meta, .test = F) + ggtitle("CD19 B cell Clonality by Treatment")+ylab("Clonality")+ylim(0,1)+stat_compare_means(comparisons = list(c("GVAX_CY", "GVAX_CY_NIVO")), method = "t.test")
+
+vis(div_div, .by = "CD66b_Gr_Status", .meta = CD19_immdata_mixcr$meta) + ggtitle("Clonality by CD66b_Gr_Status")+ylab("Clonality")+ylim(0,1)
+#p=0.1
+wilcox.test(CD19_immdata_mixcr$meta$clonality ~ CD19_immdata_mixcr$meta$CD66b_Gr_Status, exact = F)
+#p=0.1116
+t.test(CD19_immdata_mixcr$meta$clonality ~ CD19_immdata_mixcr$meta$CD66b_Gr_Status, exact = F)
+#0.1633
+vis(div_div, .by = "CD66b_Gr_Status", .meta = CD19_immdata_mixcr$meta, .test=FALSE) + ggtitle("CD19 B cell Clonality by CD66b_Gr_Status")+ylab("Clonality")+ylim(0,1) + stat_compare_means(comparisons = list(c("High", "Low")), method = "t.test")
+
+
+vis(div_div, .by = "CD4_Th17_Status", .meta = CD19_immdata_mixcr$meta) + ggtitle("Clonality by CD4_Th17_Status")+ylab("Clonality")+ylim(0,1)
+#p=0.6
+wilcox.test(CD19_immdata_mixcr$meta$clonality ~ CD19_immdata_mixcr$meta$CD4_Th17_Status, exact = F)
+#p=0.5959
+t.test(CD19_immdata_mixcr$meta$clonality ~ CD19_immdata_mixcr$meta$CD4_Th17_Status, exact = F)
+#0.3278
+vis(div_div, .by = "CD4_Th17_Status", .meta = CD19_immdata_mixcr$meta, .test = F) + ggtitle("CD19 B cell Clonality by CD4_Th17_Status")+ylab("Clonality")+ylim(0,0.5) + stat_compare_means(comparisons = list(c("High", "Low")), method = "t.test")
+
+vis(div_div, .by = "OS", .meta = CD19_immdata_mixcr$meta, .test=F) + ggtitle("CD19 B cell Clonality by OS")+ylab("Clonality")+ylim(0,1)
+
+vis(div_div, .by = "Treg_Status", .meta = CD19_immdata_mixcr$meta, .test = F) + ggtitle("CD19 B cell Clonality by Treg_Status")+ylab("Clonality")+ylim(0,0.65) + stat_compare_means(comparisons = list(c("High","Low")),method = "t.test")
+
+vis(div_div, .by = "IL17_Signaling_Status", .meta = CD19_immdata_mixcr$meta, .test = F) + ggtitle("CD19 B cell Clonality by IL17_Signaling_Status")+ylab("Clonality")+ylim(0,0.65) + stat_compare_means(comparisons = list(c("High","Low")),method = "t.test")
+
+vis(div_div, .by = "CD8_CD137_Status", .meta = CD19_immdata_mixcr$meta, .test = F) + ggtitle("CD19 B cell Clonality by CD8_CD137_Status")+ylab("Clonality")+ylim(0,0.65) + stat_compare_means(comparisons = list(c("High","Low")),method = "t.test")
+
+vis(div_div, .meta = CD19_immdata_mixcr$meta, .test = F) + scale_x_discrete(labels=CD8_immdata_mixcr$meta$Publication_id)+ggtitle("Clonality")+ylab("Clonality")+ylim(0,0.65)
+
+dev.off()
+```
+
+
+
+
+

@@ -1,0 +1,57 @@
+---
+title: "VCF2MAF"
+author: "Joe"
+date: "4/1/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+##Load Packages
+```{r}
+library('xlsx')
+library(dplyr)
+library(ggplot2)
+library(ggpubr)
+library(DESeq2)
+library(ggrepel)
+library(msigdbr)
+library(data.table)
+library("DT")
+library(pheatmap)
+library(maftools)
+```
+
+##Setting up for VCF2MAF
+```{r}
+##Set directory object
+dataDir = "~/Documents/Lei/VCF/"
+
+#Find all DNA QC_Reports
+files = (list.files(dataDir, pattern = 'somatic.vcf', recursive = TRUE,full.names = T))
+##Extract Sample names from filepaths
+filenames = (list.files(dataDir, pattern = 'somatic.vcf', recursive = T,full.names = F))
+filenames = gsub(".somatic.vcf","",filenames)
+
+```
+
+##Test Perl Script for each file
+```{r}
+#perl vcf2maf.pl --input-vcf /Users/joetandurella/Documents/Lei/VCF/PA_12004T.somatic.vcf --tumor-id PA_12004T --output-maf /Users/joetandurella/Documents/Lei/MAF/PA_12004T.somatic.maf --ref-fasta /Users/joetandurella/Downloads/hg19.fa
+
+##it worked!!
+```
+
+##Create loop to write the perl script of converting VCFs to MAFs
+```{r}
+sink(file="~/Documents/Lei/convertVCF2MAF.sh")
+for (i in 1:length(files)){
+  cat(paste0("perl vcf2maf.pl --input-vcf ","/Users/joetandurella/Documents/Lei/VCF/",filenames[i],".somatic.vcf"," --tumor-id ",filenames[i]," --output-maf ","/Users/joetandurella/Documents/Lei/MAF/",filenames[i],".maf", " --ref-fasta /Users/joetandurella/Downloads/hg19.fa"), sep = "
+      ")
+}
+sink()
+```
+
+##Script worked perfectly to convert VCF to MAF
