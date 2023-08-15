@@ -1,0 +1,37 @@
+---
+title: "20220627_Steele_Immune_Domino_hg38_reference_rockfish"
+author: "Jacob Mitchell"
+date: '2022-06-27'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(Seurat)
+library(dplyr)
+library(loomR)
+
+sessionInfo()
+```
+
+```{r}
+# subset the seurat object to remove the clusters that could not be annotated
+seurat <- readRDS("processed_data/20220622/T_immune_Steele_seurat_TNFRSF9_classifier.rds")
+
+excluded_clus <- c("32", "33", "NA")
+
+ser_subset <- seurat[,!(seurat$immune_clusters_4 %in% excluded_clus)]
+table(seurat$immune_clusters_4)
+table(ser_subset$immune_clusters_4)
+```
+
+```{r}
+saveRDS(ser_subset,
+        file = "processed_data/20220627/Steele_immune_seurat_NA_excluded.rds")
+loom_seurat <- create(filename = "processed_data/20220627/T_immune_subset_seurat_NA_excluded_counts_matrix.loom",
+                      data = ser_subset@assays$RNA@counts)
+```
+

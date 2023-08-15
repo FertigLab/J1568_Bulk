@@ -1,0 +1,107 @@
+---
+title: "20220629_Domino_Results_hg38ref_noNA"
+author: "Jacob Mitchell"
+date: '2022-06-29'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(Seurat)
+library(domino)
+library(ggplot2)
+library(ggpubr)
+library(plyr)
+library(dplyr)
+library(tidyr)
+
+sessionInfo()
+```
+
+```{r}
+filepath <- "figures/20220629"
+if(!dir.exists(filepath)){
+  dir.create(filepath, recursive = TRUE)
+}
+
+seurat <- readRDS("processed_data/20220627/Steele_immune_seurat_NA_Excluded.rds")
+domino <- readRDS("processed_data/20220627_Steele_immune_NA_excluded_hg38/Steele_immune_domino_unbuilt.rds")
+domino <- build_domino(domino, min_tf_pval = .001, max_rec_per_tf = 10,
+                       rec_tf_cor_threshold = .25)
+```
+
+
+```{r}
+# incoming signaling plots from Domino
+cell_types <- unique(seurat@meta.data$cell_type_TNFRSF9_class)
+
+for(cell in cell_types){
+  pdf(paste0(filepath, "/domino_", cell, "_incoming_signals_heatmap.pdf"),
+      onefile=FALSE)
+  incoming_signaling_heatmap(domino, rec_clust = cell,
+                             max_thresh = 2.5)
+  dev.off()
+}
+# plot all incoming signal heatmaps in the same document
+pdf(paste0(filepath, "/domino_all_incoming_signals_heatmap.pdf"))
+for(cell in cell_types){
+  incoming_signaling_heatmap(domino, rec_clust = cell,
+                             max_thresh = 2.5)
+}
+dev.off()
+# overall feature heatmap used for domino
+pdf(paste0(filepath, "/domino_feature_heatmap.pdf"), onefile=FALSE)
+feat_heatmap(domino, norm = TRUE, bool = FALSE)
+dev.off()
+# correlation of features and receptors
+pdf(paste0(filepath, "/domino_feature_receptor_cor_heatmap.pdf"), onefile=FALSE)
+cor_heatmap(domino, bool = FALSE, mark_connections = TRUE)
+dev.off()
+# signaling networks ordered in stacked columns of Ligand-Receptor-TF interactions
+for(cell in cell_types){
+  pdf(paste0(filepath, "/domino_", cell, "_gene_network.pdf"),
+      onefile=FALSE)
+  gene_network(domino, clust = cell, layout = "grid")
+  title(main = paste0(cell, " Gene Network"))
+  dev.off()
+}
+```
+
+```{r}
+for(i in names(domino@linkages$rec_lig)){
+  if("IFNG" %in% domino@linkages$rec_lig[[i]]){
+    print(paste0("Receptor: ", i))
+    print("Ligands:")
+    print(domino@linkages$rec_lig[[i]])
+    print("==============================")
+  }
+}
+VlnPlot(seurat, features = "IFNGR1", group.by = "cell_type_TNFRSF9_class")
+VlnPlot(seurat, features = "IFNGR2", group.by = "cell_type_TNFRSF9_class")
+VlnPlot(seurat, features = "IFNG", group.by = "cell_type_TNFRSF9_class")
+
+FeaturePlot(seurat, features = c("IFNGR1", "IFNGR2", "IFNG"))
+FeaturePlot(seurat, features = c("IFNGR1"))
+FeaturePlot(seurat, features = c("IFNGR2"))
+FeaturePlot(seurat, features = c("IFNG"))
+
+for(i in names(domino@linkages$tf_rec)){
+  if("IFNGR1" %in% domino@linkages$tf_rec[[i]]){
+    print(paste0("Transcription Factor: ", i))
+    print("Receptors:")
+    print(domino@linkages$tf_rec[[i]])
+    print("==============================")
+  }
+    if("IFNGR2" %in% domino@linkages$tf_rec[[i]]){
+    print(paste0("Transcription Factor: ", i))
+    print("Receptors:")
+    print(domino@linkages$tf_rec[[i]])
+    print("==============================")
+  }
+}
+
+```
+

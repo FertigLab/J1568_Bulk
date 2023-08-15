@@ -1,0 +1,97 @@
+---
+title: "20220624_B_Plot_GSEA_Results"
+author: "Jacob Mitchell"
+date: '2022-06-25'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(ggplot2)
+library(ggpubr)
+library(fgsea)
+library(msigdbr)
+library(dplyr)
+library(forcats )
+
+sessionInfo()
+```
+
+```{r}
+# read in DE results files
+
+results_path <- "figures/20220624"
+cell_filepaths <- c(paste0(results_path, "/CD8+"),
+                    paste0(results_path, "/Effector_CD8+"),
+                    paste0(results_path, "/Tregs"))
+
+# all gsea results contain "_fgsea_msigdb_" in the middle and are csv files
+
+# function to iterate through all of the gene sets gsea was carried out with
+# and make a waterfall plot of the FDR-adjusted -log10(p-values) 
+
+for(cell_path in cell_filepaths){
+  # cell_path <- cell_filepaths[3]
+  
+  # -----------------------------------------------------------------------------
+  
+  cell_type <- gsub(paste0(results_path, "/"), "", cell_path)
+  gsea_results <- list.files(cell_path)[grepl("*_fgsea_msigdb_*", list.files(cell_path)) &
+                                          grepl(".csv$", list.files(cell_path))]
+  
+  gene_sets <- gsub(paste0(cell_type, "_fgsea_msigdb_"), "", gsea_results,
+                    fixed = TRUE) %>% gsub(".csv", "", .)
+  
+  for(gs in gene_sets){
+    # gs <- "GOBP"
+    
+    data_file <- paste0(cell_path, "/", gsea_results[grepl(gs, gsea_results)])
+    data <- read.csv(data_file)[-1]
+    
+    # reorder by normalized enrichment score
+    data <- arrange(data, desc(NES))
+    # convert pathway to a factor ordered by adjusted p-values
+    data <- mutate(data, pathway=fct_reorder(pathway, NES))
+    
+    # use only significant adjusted p-values for plotting
+    data_sig <- data[data$padj <= 0.05 & !is.na(data$padj),]
+    
+    # append a column of -log10 p-values for plotting
+    data_sig$neg_log10_padj <- -1 * log10(data_sig$padj)
+    # classifier for coloring pathways on the plot based on + or - NES
+    data_sig$NES_sign <- sapply(data_sig$NES, function(x){
+      if(x < 0) {return("negative NES")}
+      if(x > 0) {return("positive NES")}
+    })
+    data_sig$NES_sign <- factor(data_sig$NES_sign,
+                                levels = c("negative NES", "positive NES"))
+    # skip iteration of the loop if there are no significant results
+    if(nrow(data_sig) == 0){
+      print(paste0("Skipped plot: ", cell_type, " cells. ", gs,
+                   " gene set. No significant pathway enrichment"))
+      next
+    }
+    gsea_plot <- ggplot(data_sig, aes(x = pathway, y = NES, fill = NES_sign)) +
+      geom_col() +
+      scale_fill_manual(values=c("positive NES"="#FF9928",
+                                 "negative NES"="#41B6D4")) +
+      # geom_text(aes(label=format(signif(padj, 4))), hjust = -.04, size = 4) +
+      theme_minimal() +
+      coord_flip() +
+      theme(legend.position = "none", axis.text.y = element_text(size = 12)) +
+      ggtitle(paste0(cell_type, ":", gs, "_Normalized_Enrichment_Scores"))
+    print(gsea_plot)
+    
+    ggsave(filename = paste0(cell_path, "/", cell_type, "_", gs, 
+                             "_fgsea_waterfall.pdf"),
+           plot = gsea_plot,
+           width = unit(10, "in"),
+           height = unit(6, "in"))
+  }
+  # -----------------------------------------------------------------------------
+}
+```
+
