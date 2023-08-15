@@ -1,0 +1,248 @@
+---
+title: "20220624_Steele_Immune_DE_TNFRSF9_hi-lo"
+author: "Jacob Mitchell"
+date: '2022-06-23'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(Seurat)
+library(fgsea)
+library(msigdbr)
+library(dplyr)
+library(tibble)
+library(ggplot2)
+
+sessionInfo()
+```
+
+```{r}
+seurat <- readRDS("processed_data/20220622/T_immune_Steele_seurat_TNFRSF9_classifier.rds")
+```
+
+```{r}
+# load in gene sets for enrichment analysis
+# gene sets from Molecular Signatures Database v7.5.1
+# https://www.gsea-msigdb.org/gsea/msigdb/collections.jsp#H
+
+# hallmark_df <- msigdbr(species = "Homo sapiens", category = "H")
+# head(hallmark_df)
+# hallmark_gs <- hallmark_df %>% split(x = .$gene_symbol, f = .$gs_name)
+
+HALLMARK <- gmtPathways('data/gmt_pathways/h.all.v7.5.1.symbols.gmt.txt')
+KEGG <- gmtPathways('data/gmt_pathways/c2.cp.kegg.v7.5.1.symbols.gmt.txt')
+REACTOME <- gmtPathways('data/gmt_pathways/c2.cp.reactome.v7.5.1.symbols.gmt.txt')
+IMMUNESIG <- gmtPathways('data/gmt_pathways/c7.immunesigdb.v7.5.1.symbols.gmt.txt')
+GOBP <- gmtPathways('data/gmt_pathways/c5.go.bp.v7.5.1.symbols.gmt.txt')
+GOMF <- gmtPathways('data/gmt_pathways/c5.go.mf.v7.5.1.symbols.gmt.txt')
+
+# obtain custom immune pathways (subset to human lists)
+customImmune <- gmtPathways('data/gmt_pathways/genesetkeyunew.gmt')
+customImmune <- sapply(customImmune,function(x){setdiff(x,"")})
+customImmune <- customImmune[sapply(customImmune,
+                                  function(x){all(x==toupper(x))})]
+
+# list containing all gene sets
+geneset_list <- list(HALLMARK = HALLMARK,
+                     KEGG = KEGG,
+                     REACTOME = REACTOME,
+                     IMMUNESIG = IMMUNESIG,
+                     GOBP = GOBP,
+                     GOMF = GOMF,
+                     customImmune = customImmune)
+```
+
+```{r}
+# Directories in the results and figures
+results_dir <- "figures/20220624"
+if(!dir.exists(results_dir)){
+  dir.create(results_dir)
+}
+
+cell_types <- c("Tregs", "Effector_CD8+", "CD8+")
+# data frame for easier reference to filepaths created for saving results
+ct_df <- data.frame("cell_types" = cell_types)
+
+cell_filepaths <- c()
+for(cell in cell_types){
+  cell_path <- paste0(results_dir, "/", cell) 
+  dir.create(cell_path)
+  cell_filepaths <- append(cell_filepaths, cell_path)
+}
+ct_df$cell_filepath <- cell_filepaths
+```
+
+```{r}
+# ggplot example of TNFRSF9 expression across immune cell types to demonstrate
+# how the TNFRSF9 classifier was created
+
+# classifier based on log-normalized expression of TNFRSF9
+# the threshold is based on the median of lognorm TNFRSF9 expression among cells
+# that had >0 expression (median = 1.28209058358989)
+# TNFRSF9_lo: 0 <= x < 1.282
+# TNFRSF9_hi: x >= 1.282
+
+TNFRSF9_class_plot <- function(seurat_metadata, title,
+                               filename = NULL, show = FALSE){
+  plot <- ggplot(seurat_metadata,
+                 aes(x = immune_clusters_4, y = TNFRSF9_expression,
+                     color = TNFRSF9_class)) +
+    geom_jitter(width = 0.1) +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+          legend.position = "right") +
+    ggtitle(title)
+  
+  if(show){
+    print(plot)
+  }
+  if(!is.null(filename)){
+    ggsave(filename = filename,
+           plot = plot,
+           width = unit(6, "in"),
+           height = unit(4, "in"))
+  }
+}
+
+TNFRSF9_class_plot(seurat@meta.data[seurat@meta.data$immune_clusters_4 %in% 
+                                      c("Tregs", "CD8+", "Effector CD8+"),],
+                   title = "Tumor Immune Cells: TNFRSF9 Expression", show = TRUE,
+                   filename = paste0(results_dir, "/CD8_Treg_TNFRSF9_exp_jitter.pdf"))
+```
+
+```{r}
+# Differential expression by MAST test
+# all results are stored for use in gsea analysis
+# positive fold change values indicate higher expression in the TNFRSF9 hi cells
+DE_results <- list()
+for(cell in cell_types){
+  ident_1 <- paste0(cell, "_TNFRSF9_hi")
+  ident_2 <- paste0(cell, "_TNFRSF9_lo")
+  DE_mast <- FindMarkers(seurat,
+                         ident.1 = ident_1,
+                         ident.2 = ident_2,
+                         group.by = "cell_type_TNFRSF9_class",
+                         test.use = "MAST",
+                         min.pct = -Inf, logfc.threshold = -Inf,
+                         min.cells.feature = 1, min.cells.group = 1)
+  DE_results[[cell]] <- DE_mast
+}
+```
+
+```{r}
+# save data frame of differential expression results
+a <- 1 # counter for reading names from cell_types
+for(df in DE_results){
+  type <- cell_types[a]
+  type_results_dir <- ct_df$cell_filepath[a]
+  
+  # version of the data frame with only significant FDR-adjusted p-values
+  df_signif <- df[df$p_val_adj < 0.05,]
+  
+  # save full list of DE results
+  write.csv(df,
+            file = paste0(type_results_dir, "/", type,
+                          "_TNFRSF9_hi-lo_all_MAST_DE_results.csv"))
+  # save significant DE results
+  write.csv(df_signif,
+            file = paste0(type_results_dir, "/", type,
+                          "_TNFRSF9_hi-lo_significant_MAST_DE_results.csv"))
+  a <- a + 1
+}
+a <- 1
+```
+
+```{r}
+# new list of the DE_results that are ordered by avg_log2FC to serve as a list
+# of ranks for the gsea analysis
+
+DE_ranks <- lapply(DE_results, function(x){
+  x <- arrange(.data = x, desc(avg_log2FC))
+  x$feature <- rownames(x)
+  x <- select(.data = x, feature, avg_log2FC)
+  x <- deframe(x)
+})
+```
+
+```{r}
+# gene set enrichment analysis for each differental expression result within cell
+# types
+
+for(cell_ranks in DE_ranks){
+  type <- cell_types[a]
+  type_results_dir <- ct_df$cell_filepath[a]
+  # fgseaRes <- fgsea(hallmark_gs, stats = cell_ranks)
+  
+  stats <- cell_ranks # numerical vector of avg_log2FC
+  gsResults <- list(HALLMARK=fgsea(pathways = HALLMARK, stats = stats),
+                    KEGG = fgsea(pathways = KEGG, stats = stats),
+                    REACTOME = fgsea(pathways = REACTOME, stats = stats), 
+                    IMMUNESIG = fgsea(pathways = IMMUNESIG, stats = stats),
+                    GOBP = fgsea(pathways = GOBP, stats = stats),
+                    GOMF = fgsea(pathways = GOMF, stats = stats),
+                    customImmune = fgsea(pathways = customImmune, stats = stats))
+  b <- 1 # counter for gene set name in saved file names
+  for(gs in gsResults){
+    gs_name <- names(gsResults)[b]
+    
+    # order results by FDR-adjusted p-value
+    gs <- arrange(gs, desc(-padj))
+    
+    # save the data frame of gsea results
+    #change leadingEdge list of genes to a string for write.csv compatibility
+    gs <- mutate(.data = gs, leadingEdge = sapply(leadingEdge, toString))
+    write.csv(gs,
+              file = paste0(type_results_dir, "/", type,
+                         "_fgsea_msigdb_", gs_name, ".csv"))
+    
+    # plot enrichment plots for each MsigDB hallmark ordered by adjusted p-value
+    pdf(file = paste0(type_results_dir, "/", type, "_fgsea_msigdb_", 
+                      gs_name, ".pdf"))
+    
+    # plot enrichment of hallmarks with significant enrichment by FDR-adjust p-value
+    gs_subset <- gs[gs$padj <= 0.05,]
+    for(hallmark in gs_subset$pathway){
+      print(plotEnrichment(geneset_list[[gs_name]][[hallmark]], stats) + 
+              labs(title = paste0(type, ": ", hallmark)))
+    }
+    dev.off()
+    b = b + 1
+  }
+  b <- 1
+  
+  # # order results by FDR-adjusted p-value
+  # fgseaRes <- arrange(fgseaRes, desc(-padj))
+  # 
+  # # plot enrichment plots for each MsigDB hallmark ordered by adjusted p-value
+  # pdf(file = paste0(type_results_dir, "/", type, "_fgsea_msigdb_hallmarks.pdf"))
+  # for(hallmark in fgseaRes$pathway){
+  #   print(plotEnrichment(hallmark_gs[[hallmark]],
+  #                        cell_ranks) + 
+  #           labs(title = paste0(type, ": ", hallmark)))
+  # }
+  # dev.off()
+  # 
+  # # plot gsea table for most significant hallmarks
+  # pdf(file = paste0(type_results_dir, "/", type, "_fgsea_msigdb_hallmarks_table.pdf"))
+  # topPathways <- c(fgseaRes[ES > 0][padj < 0.05, pathway],
+  #                  fgseaRes[ES < 0][padj < 0.05, pathway])
+  # plotGseaTable(hallmark_gs[topPathways], cell_ranks, fgseaRes, 
+  #             gseaParam=0.5)
+  # dev.off()
+  # 
+  # # save the data frame of gsea results
+  # # change leadingEdge list of genes to a string for write.csv compatibility
+  # fgseaRes <- mutate(.data = fgseaRes,
+  #                    leadingEdge = sapply(leadingEdge, toString))
+  # write.csv(fgseaRes,
+  #           file = paste0(type_results_dir, "/", type,
+  #                         "_fgsea_msigdb_hallmarks_all_results.csv"))
+  
+  a <- a + 1
+}
+a <- 1
+```

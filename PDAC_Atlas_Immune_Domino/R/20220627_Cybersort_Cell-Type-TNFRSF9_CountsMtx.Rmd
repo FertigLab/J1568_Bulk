@@ -1,0 +1,121 @@
+---
+title: "20220627_Cybersort_Cell-Type-TNFRSF9_CountsMtx"
+author: "Jacob Mitchell"
+date: '2022-06-27'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(Seurat)
+library(dplyr)
+
+sessionInfo()
+```
+
+```{r}
+results_dir <- "processed_data/20220627_cybersort"
+if(!dir.exists(results_dir)){
+  dir.create(results_dir)
+}
+
+# Steele et al data including TNFRSF9 classifier
+seurat <- readRDS("processed_data/20220622/T_immune_Steele_seurat_TNFRSF9_classifier.rds")
+```
+
+```{r}
+# exclude NA clusters and the small doublet clusters 32 and 33
+excluded_clus <- c("32", "33", "NA")
+
+ser_subset <- seurat[,!(seurat$immune_clusters_4 %in% excluded_clus)]
+table(seurat$immune_clusters_4)
+table(ser_subset$immune_clusters_4)
+
+# create classifier combining cell type and TNFRSF9 class
+ser_subset$immune_clusters_4 <- gsub(" ", "_", ser_subset$immune_clusters_4)
+ser_subset$cell_type_TNFRSF9 <- paste(ser_subset$immune_clusters_4,
+                                      ser_subset$TNFRSF9_class, sep = "_")
+
+# classifier based on log-normalized expression of TNFRSF9
+# the threshold is based on the median of lognorm TNFRSF9 expression among cells
+# that had >0 expression (median = 1.28209058358989)
+# TNFRSF9_lo: 0 <= x < 1.282
+# TNFRSF9_hi: x >= 1.282
+
+print("Cell Type counts in initial seurat object:")
+table(seurat$manuscript, seurat$immune_clusters_4)
+dim(seurat)
+
+print("Cell Type counts in subsetted seurat object:")
+table(ser_subset$manuscript, ser_subset$immune_clusters_4)
+table(ser_subset$manuscript, ser_subset$cell_type_TNFRSF9)
+table(ser_subset$manuscript, ser_subset$cell_type_TNFRSF9_class)
+dim(ser_subset)
+```
+
+```{r}
+# counts matrix
+C_mtx <- ser_subset@assays$RNA@counts
+# convert from dcgmatrix to matrix
+class(C_mtx)
+dim(C_mtx)
+head(rownames(C_mtx), n = 10)
+head(colnames(C_mtx), n = 10)
+C_mtx <- as.matrix(C_mtx)
+class(C_mtx)
+dim(C_mtx)
+head(rownames(C_mtx), n = 10)
+head(colnames(C_mtx), n = 10)
+# rename matrix columns by appending cell_type_TNFRSF9
+colnames(C_mtx) <- ser_subset$immune_clusters_4
+head(colnames(C_mtx), n = 10)
+# create another matrix labeled with only cell types
+CT_mtx <- C_mtx
+colnames(CT_mtx) <- ser_subset$cell_type_TNFRSF9
+head(colnames(CT_mtx), n = 10)
+
+# 
+CET_mtx <- C_mtx
+colnames(CET_mtx) <- ser_subset$cell_type_TNFRSF9_class
+head(colnames(CET_mtx), n = 10)
+table(colnames(CET_mtx))
+```
+
+```{r}
+# save as a tab-deliniated txt file for cybersort and an rds if formatting changes
+# are needed
+
+# Matrix annotated with cell types
+write.table(cbind(GeneSymbol = rownames(C_mtx), C_mtx),
+            file = paste0(results_dir, "/Steele_tumor_immune_cell_type_CountsMtx.txt"),
+            sep = "\t", quote = FALSE, row.names = FALSE)
+
+# write.table(as.matrix(C_mtx),
+#             file = paste0(results_dir, "/Steele_tumor_immune_cell_type_CountsMtx.txt"),
+#             col.names = TRUE, row.names = TRUE, sep = "\t")
+
+# MT_mtx with only cell type labels
+write.table(cbind(GeneSymbol = rownames(CT_mtx), CT_mtx),
+            file = paste0(results_dir,
+                          "/Steele_tumor_immune_cell_type_TNFRSF9_class_CountsMtx.txt"),
+            sep = "\t", quote = FALSE, row.names = FALSE)
+
+# write.table(as.matrix(CT_mtx),
+#             file = paste0(results_dir,
+#                           "/Steele_tumor_immune_cell_type_TNFRSF9_class_CountsMtx.txt"),
+#             col.names = TRUE, row.names = TRUE, sep = "\t")
+
+# CD8_Treg_mtx with only CD8+, Effector CD8+, and Tregs annotated with TNFRSF9 class
+write.table(cbind(GeneSymbol = rownames(CET_mtx), CET_mtx),
+            file = paste0(results_dir,
+                          "/Steele_tumor_immune_CD8_Treg_TNFRSF9_class_CountsMtx.txt"),
+            sep = "\t", quote = FALSE, row.names = FALSE)
+
+# save seurat object where all annotations are available
+saveRDS(ser_subset,
+        file = paste0(results_dir, "/Steele_tumor_immune_cell_type_SeuratObj.rds"))
+
+```

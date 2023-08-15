@@ -1,0 +1,502 @@
+---
+title: "20220627_Steele_Immune_Results_Plotting"
+author: "Jacob Mitchell"
+date: '2022-06-27'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(Seurat)
+library(domino)
+library(ggplot2)
+library(ggpubr)
+library(plyr)
+library(dplyr)
+library(tidyr)
+library(RColorBrewer)
+library("scatterHatch")
+
+sessionInfo()
+```
+
+```{r}
+# directory for saved figures
+filepath <- "figures/20220627"
+if(!dir.exists(filepath)){
+  dir.create(filepath, recursive = TRUE)
+}
+```
+
+
+```{r}
+# read in the Steele et al Tumor atlas data where cells in clusters NA, 32, 33
+# have been removed
+seurat <- readRDS("processed_data/20220627/Steele_immune_seurat_NA_Excluded.rds")
+
+# check dimensions and cell counts
+dim(seurat)
+table(seurat$immune_clusters_4)
+table(seurat$cell_type_TNFRSF9_class)
+
+# recomputeted domino result without NA clusters
+domino <- readRDS("processed_data/20220627_Steele_immune_NA_excluded_hg38/Steele_immune_domino_unbuilt.rds")
+domino <- build_domino(domino, min_tf_pval = .001, max_rec_per_tf = 10,
+                       rec_tf_cor_threshold = .25)
+```
+
+```{r}
+# consistent color palettes for plotting
+
+# TNFRSF9 class
+# pal_cell_types <- append("#7F7F7F", brewer.pal(12, "Paired"))
+ 
+# TNFRSF9_class
+pal_TNFRSF9_class <- c("#FF9928", "#41B6D4") # orange and cyan
+```
+
+
+```{r}
+# data frame for cell counts and proprotions
+immune_cells <- data.frame("ID" = unique(seurat$sample_ID))
+
+# set ID as an ordered factor to group patients by treatment arm
+immune_cells$ID <- factor(immune_cells$ID,
+                          levels = c("PDAC_TISSUE_1", "PDAC_TISSUE_2", "PDAC_TISSUE_3",
+                                     "PDAC_TISSUE_4", "PDAC_TISSUE_5", "PDAC_TISSUE_6",
+                                     "PDAC_TISSUE_7", "PDAC_TISSUE_8", "PDAC_TISSUE_9",
+                                     "PDAC_TISSUE_10", "PDAC_TISSUE_11A", "PDAC_TISSUE_11B",
+                                     "PDAC_TISSUE_12", "PDAC_TISSUE_13", "PDAC_TISSUE_14",
+                                     "PDAC_TISSUE_15", "PDAC_TISSUE_16"))
+
+# manuscript for each subject
+suppressMessages(
+  immune_cells$manuscript <- mapvalues(x = immune_cells$ID,
+                                from = seurat@meta.data$sample_ID,
+                                to = seurat@meta.data$manuscript))
+# total number of cells for each ID
+immune_cells$cell_count <- sapply(immune_cells$ID, function(x){
+  nrow(seurat@meta.data[seurat@meta.data$sample_ID == x,])})
+
+# counts of specific cell types by patient
+target <- c("CD8+", "Effector CD8+", "Tregs")
+TNFRSF9_target <- c("CD8+_TNFRSF9_lo", "CD8+_TNFRSF9_hi",
+                    "Effector_CD8+_TNFRSF9_lo", "Effector_CD8+_TNFRSF9_hi",
+                    "Tregs_TNFRSF9_lo", "Tregs_TNFRSF9_hi")
+
+# count of the number of CD8+ and Tregs cells
+immune_cells$CD8_Treg_count <- sapply(immune_cells$ID, function(x){
+  nrow(seurat@meta.data[seurat@meta.data$sample_ID == x &
+                          seurat@meta.data$immune_clusters_4 %in% target,])})
+
+for(cell in target){
+  patient_cell_count <- paste0(cell, "_count")
+  immune_cells[[patient_cell_count]] <- sapply(immune_cells$ID, function(x){
+    nrow(seurat@meta.data[seurat@meta.data$sample_ID == x &
+                            seurat@meta.data$immune_clusters_4 == cell,])
+  })
+}
+for(cell in TNFRSF9_target){
+  patient_cell_count <- paste0(cell, "_count")
+  immune_cells[[patient_cell_count]] <- sapply(immune_cells$ID, function(x){
+    nrow(seurat@meta.data[seurat@meta.data$sample_ID == x &
+                            seurat@meta.data$cell_type_TNFRSF9_class == cell,])
+  })
+}
+
+# replace spaces with underscores
+colnames(immune_cells) <- gsub(" ", "_", colnames(immune_cells))
+# fix space in target names
+target <- gsub(" ", "_", target)
+
+ct_counts <- colnames(immune_cells)[gsub("_count", "", colnames(immune_cells)) %in%
+                                      target]
+
+# alternative data frame where cell type proportions are calculated over the
+# total number of CD8+, Effector CD8+, and Tregs cells
+
+CD8_Treg_cells <- immune_cells
+
+for(type_count in ct_counts){
+  type_prop <- gsub("_count", "_proportion", type_count)
+  type_hi <- gsub("_count", "_TNFRSF9_hi", type_count)
+  type_hi_count <- paste0(type_hi, "_count")
+  type_hi_prop <- paste0(type_hi, "_proportion")
+  type_lo <- gsub("_count", "_TNFRSF9_lo", type_count)
+  type_lo_count <- paste0(type_lo, "_count")
+  type_lo_prop <- paste0(type_lo, "_proportion")
+  
+  # cell type proportions over all cells from each subject
+  immune_cells[[type_prop]] <- immune_cells[[type_count]] / immune_cells[["cell_count"]]
+  immune_cells[[type_hi_prop]] <- immune_cells[[type_hi_count]] / immune_cells[[type_count]]
+  immune_cells[[type_lo_prop]] <- immune_cells[[type_lo_count]] / immune_cells[[type_count]]
+  
+  # cell type proportions over only CD8 and Treg cells targeted for TNFRSF9 analysis
+  # to be used in stacked barplot consisting of all three cell types
+  # therefore, each tpype and subtype's proportion is calculated over the
+  # total CD8_Treg_count so that the lo and hi proportions of each of the 3 types
+  # sum to 1
+  CD8_Treg_cells[[type_prop]] <- CD8_Treg_cells[[type_count]] / CD8_Treg_cells[["CD8_Treg_count"]]
+  CD8_Treg_cells[[type_hi_prop]] <- CD8_Treg_cells[[type_hi_count]] / CD8_Treg_cells[["CD8_Treg_count"]]
+  CD8_Treg_cells[[type_lo_prop]] <- CD8_Treg_cells[[type_lo_count]] / CD8_Treg_cells[["CD8_Treg_count"]]
+}
+
+for(ct in target){
+  # subset dataframe to the targeted cell type
+  ct_cols <- append(c("ID", "manuscript"),
+                    colnames(immune_cells)[startsWith(colnames(immune_cells), paste0(ct, "_"))])
+  ct_cells <- immune_cells[,colnames(immune_cells) %in% ct_cols]
+  # number of patients
+  pat_count <- nrow(ct_cells)
+  # number of patients with at least one count of the cells of interest
+  pat_pos_count <- nrow(ct_cells[ct_cells[4] > 0,])
+  
+  # print number of patients that have counts of the targeted cell type
+  paste0("samples with measured ", ct, " counts: ", pat_pos_count, " / ", pat_count)
+  ## Plot stacked barplot of TNFRSF9 class cell counts ########################
+  # convert to stacked dataframe
+  ct_stacked_counts <- pivot_longer(ct_cells,
+                             cols = colnames(ct_cells)[4:5])
+  colnames(ct_stacked_counts)[7:8] <- c("TNFRSF9_class", "TNFRSF9_counts")
+  # shorten the plot label by removing "_counts"
+  ct_stacked_counts$TNFRSF9_class <- gsub("_count", "", ct_stacked_counts$TNFRSF9_class)
+  # convert the label to a factor for correct ordering
+  level_hi <- grep("_TNFRSF9_hi", ct_stacked_counts$TNFRSF9_class, value = TRUE)[1]
+  level_lo <- grep("_TNFRSF9_lo", ct_stacked_counts$TNFRSF9_class, value = TRUE)[1]
+  ct_stacked_counts$TNFRSF9_class <- factor(ct_stacked_counts$TNFRSF9_class,
+                                     levels = c(level_hi, level_lo))
+  # stacked barplot
+  plot1 <- ggplot(ct_stacked_counts,
+         aes(fill=TNFRSF9_class, y=TNFRSF9_counts, x=ID)) + 
+    geom_bar(position="stack", stat="identity") +
+    scale_fill_manual(values=pal_TNFRSF9_class[1:2]) +
+    ylab("cell count") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = -90, vjust = 0.5, hjust=0),
+          legend.position = "right") +
+    ggtitle(paste0(ct, ": TNFRSF9 Expressing Count"))
+  print(plot1)
+  ggsave(filename = paste0(filepath, "/", ct, "_TNFRSF9_expressing_count.pdf"),
+         plot = plot1,
+         width = unit(12, "in"),
+         height = unit(6, "in"))
+  
+  # counts plot only including samples with non-zero cell count
+  ct_stacked_counts <- ct_stacked_counts[ct_stacked_counts[3] > 0,]
+  plot2 <- ggplot(ct_stacked_counts,
+           aes(fill=TNFRSF9_class, y=TNFRSF9_counts, x=ID)) + 
+    geom_bar(position="stack", stat="identity") +
+    scale_fill_manual(values=pal_TNFRSF9_class[1:2]) +
+    ylab("cell count") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = -90, vjust = 0.5, hjust=0),
+          legend.position = "right") +
+    ggtitle(paste0(ct, ": TNFRSF9 Expressing Count"))
+  print(plot2)
+  ggsave(filename = paste0(filepath, "/", ct, "_TNFRSF9_expressing_count_nonZero.pdf"),
+         plot = plot2,
+         width = unit(12, "in"),
+         height = unit(6, "in"))
+  
+  ## Plot stacked barplot of TNFRSF9 class proportions ########################
+  
+  # excludes subjects with no cells of the targeted cell type
+  # subset data frame to cells with counts of the targeted cell type
+  ct_cells <- ct_cells[ct_cells[3] > 0,]
+  
+  # convert to stacked dataframe
+  ct_stacked <- pivot_longer(ct_cells,
+                             cols = colnames(ct_cells)[7:8])
+  colnames(ct_stacked)[7:8] <- c("TNFRSF9_class", "TNFRSF9_proportion")
+  # shorten the plot label by removing "_proportion"
+  ct_stacked$TNFRSF9_class <- gsub("_proportion", "", ct_stacked$TNFRSF9_class)
+  # convert the label to a factor for correct ordering
+  level_hi <- grep("_TNFRSF9_hi", ct_stacked$TNFRSF9_class, value = TRUE)[1]
+  level_lo <- grep("_TNFRSF9_lo", ct_stacked$TNFRSF9_class, value = TRUE)[1]
+  ct_stacked$TNFRSF9_class <- factor(ct_stacked$TNFRSF9_class,
+                                     levels = c(level_hi, level_lo))
+  # stacked barplot
+  plot3 <- ggplot(ct_stacked,
+         aes(fill=TNFRSF9_class, y=TNFRSF9_proportion, x=ID)) + 
+    geom_bar(position="stack", stat="identity") +
+    scale_fill_manual(values=pal_TNFRSF9_class[1:2]) +
+    ylab("proportion of cells") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = -90, vjust = 0.5, hjust=0),
+          legend.position = "right") +
+    ggtitle(paste0(ct, ": TNFRSF9 Expressing Proportion"))
+  print(plot3)
+  ggsave(filename = paste0(filepath, "/", ct, "_TNFRSF9_expressing_proportion.pdf"),
+         plot = plot3,
+         width = unit(12, "in"),
+         height = unit(6, "in"))
+  
+  # report mean proportions of cells at hi, lo, and no expression
+  writeLines(paste0("mean proportion of ", ct, " with high TNFRSF9 expression: ",
+                    mean(ct_cells[[7]]), "\n sd = ", sd(ct_cells[[7]]), " ; n = ",
+                    pat_pos_count, "\n SEM = ", sd(ct_cells[[7]])/sqrt(pat_pos_count)))
+}
+
+# stacked barplot of all three types concurrently
+CD8_Treg_cols <- append(c("ID", "manuscript"),
+                    colnames(CD8_Treg_cells)[endsWith(colnames(CD8_Treg_cells),
+                                                      "_TNFRSF9_hi_proportion") |
+                                               endsWith(colnames(CD8_Treg_cells),
+                                                        "_TNFRSF9_lo_proportion")])
+
+CD8_Treg_plot_cells <- CD8_Treg_cells[,colnames(CD8_Treg_cells) %in% CD8_Treg_cols]
+
+# exclude samples with no CD8 or Treg cells "PDAC_TISSUE_14"
+CD8_Treg_plot_cells <- CD8_Treg_plot_cells[!is.nan(CD8_Treg_plot_cells$`CD8+_TNFRSF9_hi_proportion`),]
+CD8_Treg_stack <- pivot_longer(CD8_Treg_plot_cells,
+                               cols = colnames(CD8_Treg_plot_cells)[3:8])
+colnames(CD8_Treg_stack)[3:4] <- c("TNFRSF9_class", "TNFRSF9_proportion")
+CD8_Treg_stack$TNFRSF9_class <- gsub("_proportion", "", CD8_Treg_stack$TNFRSF9_class)
+
+# convert the label to a factor for correct ordering
+# level_hi <- unique(grep("_TNFRSF9_hi", CD8_Treg_stack$TNFRSF9_class, value = TRUE))
+# level_lo <- unique(grep("_TNFRSF9_lo", CD8_Treg_stack$TNFRSF9_class, value = TRUE))
+CD8_Treg_stack$TNFRSF9_class <- factor(CD8_Treg_stack$TNFRSF9_class,
+                                       levels = c("CD8+_TNFRSF9_hi",
+                                                  "CD8+_TNFRSF9_lo",
+                                                  "Effector_CD8+_TNFRSF9_hi",
+                                                  "Effector_CD8+_TNFRSF9_lo",
+                                                  "Tregs_TNFRSF9_hi",
+                                                  "Tregs_TNFRSF9_lo"))
+
+  
+# stacked barplot
+plot4 <- ggplot(CD8_Treg_stack,
+       aes(fill=TNFRSF9_class, y=TNFRSF9_proportion, x=ID)) + 
+  geom_bar(position="stack", stat="identity") +
+  # scale_fill_manual(values=c(pal_cell_types[4:7],
+  #                            pal_cell_types[12:13])) +
+  ylab("proportion of cells") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = -90, vjust = 0.5, hjust=0),
+        legend.position = "right") +
+  ggtitle("Proportions of CD8+ and Treg cells Expressing TNFRSF9")
+print(plot4)
+ggsave(filename = paste0(filepath, "/CD8_and_Treg_TNFRSF9_expressing_proportion.pdf"),
+       plot = plot4,
+       width = unit(12, "in"),
+       height = unit(6, "in"))
+
+# save data frame of calculated proportions and the stacked data frame used to plot
+write.csv(CD8_Treg_cells,
+          file = paste0(filepath,
+                        "/Steele_Immune_CD8_and_Treg_counts_and_proportions.csv"))
+write.csv(CD8_Treg_stack,
+          file = paste0(filepath,
+                        "/Steele_Immune_CD8_and_Treg_proportions_stacked.csv"))
+
+```
+
+```{r}
+# per subject counts of each cell type for correlation of TNFRSF9 CD8+
+# with neutrophil proportion
+
+# data frame for cell counts and proprotions
+all_cells <- data.frame("ID" = unique(seurat$sample_ID))
+
+# set ID as an ordered factor to group patients by treatment arm
+all_cells$ID <- factor(all_cells$ID,
+                          levels = c("PDAC_TISSUE_1", "PDAC_TISSUE_2", "PDAC_TISSUE_3",
+                                     "PDAC_TISSUE_4", "PDAC_TISSUE_5", "PDAC_TISSUE_6",
+                                     "PDAC_TISSUE_7", "PDAC_TISSUE_8", "PDAC_TISSUE_9",
+                                     "PDAC_TISSUE_10", "PDAC_TISSUE_11A", "PDAC_TISSUE_11B",
+                                     "PDAC_TISSUE_12", "PDAC_TISSUE_13", "PDAC_TISSUE_14",
+                                     "PDAC_TISSUE_15", "PDAC_TISSUE_16"))
+
+# manuscript for each subject
+suppressMessages(
+  all_cells$manuscript <- mapvalues(x = all_cells$ID,
+                                from = seurat@meta.data$sample_ID,
+                                to = seurat@meta.data$manuscript))
+# total number of cells for each ID
+all_cells$cell_count <- sapply(all_cells$ID, function(x){
+  nrow(seurat@meta.data[seurat@meta.data$sample_ID == x,])})
+
+# counts of cell types by patient, delineating TNFRSF9 expression in CD8s and Tregs
+all_types <- unique(seurat$cell_type_TNFRSF9_class)
+
+for(cell in all_types){
+  patient_cell_count <- paste0(cell, "_count")
+  all_cells[[patient_cell_count]] <- sapply(immune_cells$ID, function(x){
+    nrow(seurat@meta.data[seurat@meta.data$sample_ID == x &
+                            seurat@meta.data$cell_type_TNFRSF9_class == cell,])
+  })
+}
+all_ct_count <- colnames(all_cells)[grepl("_count$", colnames(all_cells)) &
+                                      colnames(all_cells) != "cell_count"]
+for(type_count in all_ct_count){
+  type_prop <- gsub("_count", "_proportion", type_count)
+  # cell type proportions over all cells from each subject
+  all_cells[[type_prop]] <- all_cells[[type_count]] / all_cells[["cell_count"]]
+}
+write.csv(all_cells,
+          file = paste0(filepath,
+                        "/Steele_Immune_all_cells_counts_and_proportions.csv"))
+```
+
+```{r}
+# plot of TNFRSF9 expression in each cell type colored by hi or lo classification
+
+jitter_plot <- ggplot(seurat@meta.data,
+                      aes(x = immune_clusters_4, y = TNFRSF9_expression, 
+                          col = TNFRSF9_class)) +
+  geom_jitter(width = 0.25) +
+  scale_color_manual(values=pal_TNFRSF9_class[1:2]) +
+  theme_minimal() +
+  ylab("log-normalized TNFRSF9 Expression") +
+  theme(axis.text.x = element_text(angle = -90, vjust = 0.5, hjust=0),
+        legend.position = "right")
+print(jitter_plot)
+ggsave(filename = paste0(filepath, "/TNFRSF9_expression_class_jitter.pdf"),
+       plot = jitter_plot,
+       width = unit(10, "in"),
+       height = unit(6, "in"))
+```
+
+```{r}
+# incoming signaling plots from Domino
+cell_types <- unique(seurat@meta.data$cell_type_TNFRSF9_class)
+
+for(cell in cell_types){
+  pdf(paste0(filepath, "/domino_", cell, "_incoming_signals_heatmap.pdf"),
+      onefile=FALSE)
+  incoming_signaling_heatmap(domino, rec_clust = cell,
+                             max_thresh = 2.5)
+  dev.off()
+}
+# plot all incoming signal heatmaps in the same document
+pdf(paste0(filepath, "/domino_all_incoming_signals_heatmap.pdf"), onefile=FALSE)
+for(cell in cell_types){
+  incoming_signaling_heatmap(domino, rec_clust = cell,
+                             max_thresh = 2.5)
+}
+dev.off()
+# overall feature heatmap used for domino
+pdf(paste0(filepath, "/domino_feature_heatmap.pdf"), onefile=FALSE)
+feat_heatmap(domino, norm = TRUE, bool = FALSE)
+dev.off()
+# correlation of features and receptors
+pdf(paste0(filepath, "/domino_feature_receptor_cor_heatmap.pdf"), onefile=FALSE)
+cor_heatmap(domino, bool = FALSE, mark_connections = TRUE)
+dev.off()
+
+```
+
+```{r}
+# UMAP of single cell data used
+type_umap <- DimPlot(seurat, group.by = "cell_type_TNFRSF9_class", reduction = "umap") + 
+  ggtitle("Tumor Sample Immune Cells")
+print(type_umap)
+type_umap_NL <- type_umap +
+  theme(legend.position = "none")
+# save with and without legend for formatting
+ggsave(filename = paste0(filepath, "/Steele_immune_celltype_umap.pdf"),
+       plot = type_umap,
+       width = unit(10, "in"),
+       height = unit(8, "in"))
+ggsave(filename = paste0(filepath, "/Steele_immune_celltype_umap_noLegend.pdf"),
+       plot = type_umap_NL,
+       width = unit(8, "in"),
+       height = unit(8, "in"))
+```
+
+```{r Scatter Hatch Version of UMAP plots for Accessibility}
+atlas_meta <- seurat@meta.data
+atlas_meta$cellID <- paste0('cell_', 1:nrow(atlas_meta))
+
+atlas_meta$Xt <- seurat@reductions$umap@cell.embeddings[,1]
+atlas_meta$Yt <- seurat@reductions$umap@cell.embeddings[,2]
+
+atlas_pattern_list <-
+  list(
+    list(pattern = "|", lineWidth = 0.2), # A_CD4
+    list(pattern = "/", lineWidth = 0.2, angle = c(45)), # B
+    list(pattern = "-", lineWidth = 0.2), # CD4
+    list(pattern = "/", lineWidth = 0.2, angle = c(135)), # CD8
+    list(pattern = "x", angle = c(135, 90, 45), lineWidth = 0.2), # eCD8
+    list(pattern = "+", lineWidth = 0.2), # Mac
+    list(pattern = ""), # Mast
+    list(pattern = "|", lineWidth = 0.2), # Neu
+    list(pattern = "/", lineWidth = 0.2, angle = c(45)), # NK
+    list(pattern = "-", lineWidth = 0.2) # Treg
+    )
+
+sH_atlas <- scatterHatch(data = atlas_meta, x = "Xt", y = "Yt",
+                    color_by = "immune_clusters_4",
+                    legendTitle = "Cell Type",
+                    colorPalette = 
+                      c("#666666", "#1C91D4", "#D99BBD", "#56B4E9", "#FFBE2D", "#2CFFC6", "#FF9B4D", "#3D3D3D", "#F0E442", "#AA9F0D"),
+                    patternList = atlas_pattern_list)
+
+sH_atlas
+
+ggsave(filename = paste0(filepath, "/Steele_immune_celltype_umap_scatterHatch.pdf"),
+       plot = sH_atlas,
+       width = unit(8, "in"),
+       height = unit(8, "in"))
+
+ggsave(filename = paste0(filepath, "/Steele_immune_celltype_umap_scatterHatch_noLegend.pdf"),
+       plot = sH_atlas + theme(legend.position = "none"),
+       width = unit(8, "in"),
+       height = unit(8, "in"))
+
+# plot just the T cells with TNFRSF9 class
+ser_T <- seurat[, seurat$immune_clusters_4 %in% 
+                  c("Activated CD4+", "CD4+", "CD8+", "Effector CD8+", "Tregs")]
+# recalculate low-dim embedings for T cells
+ser_T <- RunPCA(ser_T)
+ElbowPlot(ser_T, reduction = "pca")
+ser_T <- RunUMAP(ser_T, reduction = "pca", dims = 1:10)
+
+# Create Scatter Hatch for T cells
+T_meta <- ser_T@meta.data
+T_meta$cellID <- paste0('cell_', 1:nrow(T_meta))
+
+T_meta$Xt <- ser_T@reductions$umap@cell.embeddings[,1]
+T_meta$Yt <- ser_T@reductions$umap@cell.embeddings[,2]
+
+Tcell_pattern_list <-
+  list(
+    list(pattern = "|", lineWidth = 0.2), # A_CD4
+    list(pattern = "-", lineWidth = 0.2), # CD4
+    list(pattern = "+", lineWidth = 0.2), # CD8_hi
+    list(pattern = "/", lineWidth = 0.2, angle = c(135)), # CD8_lo
+    list(pattern = "+", lineWidth = 0.2), # eCD8_hi
+    list(pattern = "x", angle = c(135, 90, 45), lineWidth = 0.2), # eCD8_lo
+    list(pattern = "/", lineWidth = 0.2, angle = c(20)), # Treg_hi
+    list(pattern = "-", lineWidth = 0.2) # Treg_lo
+    )
+
+sH_T <- scatterHatch(data = T_meta, x = "Xt", y = "Yt",
+                    color_by = "cell_type_TNFRSF9_class",
+                    legendTitle = "Cell Type",
+                    pointSize = 2,
+                    pointAlpha = 1,
+                    colorPalette = c("#666666", "#D99BBD", "#8D3666", "#56B4E9","#00F6B3", "#FFBE2D", "#00446B", "#AA9F0D"),
+                    patternList = Tcell_pattern_list)
+sH_T
+
+ggsave(filename = paste0(filepath, "/Steele_Tcell_TNFRSF9class_umap_scatterHatch.pdf"),
+       plot = sH_T ,
+       width = unit(8, "in"),
+       height = unit(8, "in"))
+
+ggsave(filename = paste0(filepath, "/Steele_Tcell_TNFRSF9class_umap_scatterHatch_noLegend.pdf"),
+       plot = sH_T + theme(legend.position = "none"),
+       width = unit(8, "in"),
+       height = unit(8, "in"))
+
+```
+
+```{r}
+sessionInfo()
+```
+

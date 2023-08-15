@@ -1,0 +1,57 @@
+---
+title: "20220721_Supplement_Tables_DE_GSEA_Results"
+author: "Jacob Mitchell"
+date: '2022-07-21'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(dplyr)
+
+sessionInfo()
+```
+
+```{r}
+results_dir <- "figures/20220721_Sup_Tables"
+if(!dir.exists(results_dir)){
+  dir.create(results_dir)
+}
+
+table_dir <- "figures/20220624"
+```
+
+```{r}
+# list of cell type directories within table_dir
+cell_dirs <- list.dirs(paste0(table_dir))[-1]
+
+for(cell in cell_dirs){
+  # cell <- cell_dirs[1]
+  cell_name <- gsub(paste0(table_dir, "/"), "", cell)
+  gsea_table <- list.files(cell)[grep("*msigdb_HALLMARK.csv$", list.files(cell))]
+  de_table <- list.files(cell)[grep("*all_MAST_DE.+\\.csv$", list.files(cell))]
+  
+  # read in results file
+  gsea_df <- read.csv(file = paste0(cell, "/", gsea_table))
+  de_df <- read.csv(file = paste0(cell, "/", de_table))
+  
+  # subset to significant results
+  gsea_sig <- gsea_df[gsea_df$padj < 0.05,]
+  de_sig <- de_df[de_df$p_val_adj < 0.05,]
+  
+  # save the significant results if the data frames are not empty
+  if(nrow(gsea_sig)){
+    write.csv(gsea_sig,
+              file = paste0(results_dir, "/", cell_name, "_significant_gsea.csv"))
+  }
+  if(nrow(de_sig)){
+    write.csv(de_sig,
+              file = paste0(results_dir, "/", cell_name, "_significant_DE.csv"))
+  }
+}
+
+```
+

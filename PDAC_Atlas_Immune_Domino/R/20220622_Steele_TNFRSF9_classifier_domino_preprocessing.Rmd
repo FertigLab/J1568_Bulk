@@ -1,0 +1,318 @@
+---
+title: "20220622_Steele_TNFRSF9_classifier_domino_preprocessing"
+author: "Jacob Mitchell"
+date: '2022-06-22'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(Seurat)
+library(monocle3)
+library(forcats)
+library(plyr)
+library(tidyr)
+library(dplyr)
+library(tibble)
+library(ggplot2)
+library(loomR)
+
+sessionInfo()
+```
+
+```{r}
+# directory for saved figures
+filepath <- "figures/20220622"
+if(!dir.exists(filepath)){
+  dir.create(filepath, recursive = TRUE)
+}
+# directory for data to pass to domino
+resultpath <- "processed_data/20220622"
+if(!dir.exists(resultpath)){
+  dir.create(resultpath, recursive = TRUE)
+}
+```
+
+```{r}
+# cds contains specific immune labels prepared by Melissa Lyman for the
+# PDAC atlas publication
+# Shared on June 6, 2022
+cds <- readRDS("data/T_immune_subset_cds.rds")
+
+# subset to cells from Steele et al
+cds_steele <- cds[,pData(cds)$manuscript == "Steele"]
+
+table(pData(cds)$manuscript)
+table(pData(cds_steele)$manuscript)
+
+# change rownames to gene short names instead of ensembl ID
+rownames(cds_steele) <- fData(cds)$gene_short_name
+
+# convert the Steele data to a Seurat object
+seurat <- as.Seurat(cds_steele, counts = "counts", data = NULL)
+
+dim(seurat)
+dim(cds_steele)
+
+dim(seurat@meta.data)
+```
+
+```{r}
+## preprocess the Steele et al tumor immune cells following the pipeline in
+## the Seurat tutorials. The log-normalized expression is key to the TNFRSF9
+## classifier, and the scaled expression values are needed for domino
+
+# rename the assay from originalexp to RNA
+if(seurat@active.assay == "originalexp"){
+  seurat <- RenameAssays(object = seurat, originalexp = "RNA")
+}
+
+# log normalize the counts data in the seurat object
+seurat <- NormalizeData(seurat, assay = "RNA", normalization.method = "LogNormalize")
+
+# identify variable features
+seurat<- FindVariableFeatures(seurat, selection.method = "vst", nfeatures = 2000)
+top10 <- head(VariableFeatures(seurat), 10)
+LabelPoints(plot = VariableFeaturePlot(seurat), points = top10, repel = TRUE)
+
+# scale the expression data
+seurat <- ScaleData(seurat, features = rownames(seurat))
+
+# PCA on variable features
+seurat <- RunPCA(seurat, features = VariableFeatures(object = seurat))
+DimPlot(seurat, reduction = "pca", group.by = "immune_clusters_4")
+ElbowPlot(seurat, ndims = 50)
+
+# cluster cells using 25 PCs
+set.seed(1)
+seurat <- FindNeighbors(seurat, dims = 1:25)
+# compute UMAP embedding
+seurat <- RunUMAP(seurat, dims = 1:25)
+
+DimPlot(seurat, reduction = "umap")
+DimPlot(seurat, reduction = "umap", group.by = "immune_clusters_4")
+DimPlot(seurat, reduction = "umap", group.by = "sample_ID")
+
+# VlnPlot(seurat, features = "TNFRSF9", group.by = "immune_clusters_4", raster = FALSE)
+# VlnPlot(seurat, features = "TNFRSF9", group.by = "immune_clusters_4",
+#         slot = "scale.data", raster = FALSE)
+```
+
+```{r}
+# incorperate the TNFRSF9 classifier based on median expression in cells with
+# non-zero log-normalized TNFRSF9 expression
+
+# named vector of TNFRSF9 expression values in each cell
+TNFRSF9_exp <- seurat@assays$RNA@data[rownames(seurat) == "TNFRSF9",]
+# add expression value to seurat meta data
+seurat$TNFRSF9_expression <- TNFRSF9_exp
+FeaturePlot(seurat, features = "TNFRSF9_expression", raster = FALSE)
+
+# cutoff value as the median of the non-zero expression values of TNFRSF9 in all cells
+cutoff <- median(TNFRSF9_exp[TNFRSF9_exp != 0])
+
+print(paste0("median non-zero log-normalized expression of TNFRSF9: ", cutoff))
+
+# TNFRSF9 classifier
+seurat$TNFRSF9_class <- sapply(seurat$TNFRSF9_expression, function (x){
+  if(x >= cutoff){
+    return("TNFRSF9_hi")
+  }
+  if(x < cutoff){
+    return("TNFRSF9_lo")
+  }
+})
+
+DimPlot(seurat, group.by = "TNFRSF9_class", raster = FALSE)
+
+ggplot(seurat@meta.data, aes(x = immune_clusters_4, y = TNFRSF9_expression,
+                             col = TNFRSF9_class)) +
+  geom_jitter(width = 0.25) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        legend.position = "right")
+
+table(seurat$TNFRSF9_class, seurat$immune_clusters_4)
+```
+
+```{r}
+# add a cell type classifier including TNFRSF9_hi and TNFRSF9_lo CD8+ cells and
+# Tregs
+
+seurat@meta.data <- seurat@meta.data %>% 
+  mutate(cell_type_TNFRSF9_class = 
+           ifelse(immune_clusters_4 == "CD8+" & TNFRSF9_class == "TNFRSF9_hi", "CD8+_TNFRSF9_hi",
+            ifelse(immune_clusters_4 == "CD8+" & TNFRSF9_class == "TNFRSF9_lo", "CD8+_TNFRSF9_lo",
+            ifelse(immune_clusters_4 == "Effector CD8+" & TNFRSF9_class == "TNFRSF9_hi", "Effector_CD8+_TNFRSF9_hi",
+            ifelse(immune_clusters_4 == "Effector CD8+" & TNFRSF9_class == "TNFRSF9_lo", "Effector_CD8+_TNFRSF9_lo",
+            ifelse(immune_clusters_4 == "Tregs" & TNFRSF9_class == "TNFRSF9_hi", "Tregs_TNFRSF9_hi",
+            ifelse(immune_clusters_4 == "Tregs" & TNFRSF9_class == "TNFRSF9_lo", "Tregs_TNFRSF9_lo",
+            immune_clusters_4)))))))
+
+# replace spaces in the new classifier with underscores for formatting
+seurat$cell_type_TNFRSF9_class <- gsub(" ", "_", seurat$cell_type_TNFRSF9_class)
+```
+
+```{r}
+# counts and proportions of high TNFSF9 cells by subject and manuscript
+
+# data frame for cell counts and proprotions
+immune_cells <- data.frame("ID" = unique(seurat$sample_ID))
+
+# set ID as an ordered factor to group patients by treatment arm
+immune_cells$ID <- factor(immune_cells$ID,
+                          levels = c("PDAC_TISSUE_1", "PDAC_TISSUE_2", "PDAC_TISSUE_3",
+                                     "PDAC_TISSUE_4", "PDAC_TISSUE_5", "PDAC_TISSUE_6",
+                                     "PDAC_TISSUE_7", "PDAC_TISSUE_8", "PDAC_TISSUE_9",
+                                     "PDAC_TISSUE_10", "PDAC_TISSUE_11A", "PDAC_TISSUE_11B",
+                                     "PDAC_TISSUE_12", "PDAC_TISSUE_13", "PDAC_TISSUE_14",
+                                     "PDAC_TISSUE_15", "PDAC_TISSUE_16"))
+
+# manuscript for each subject
+suppressMessages(
+  immune_cells$manuscript <- mapvalues(x = immune_cells$ID,
+                                from = seurat@meta.data$sample_ID,
+                                to = seurat@meta.data$manuscript))
+# total number of cells for each ID
+immune_cells$cell_count <- sapply(immune_cells$ID, function(x){
+  nrow(seurat@meta.data[seurat@meta.data$sample_ID == x,])})
+
+# counts of specific cell types by patient
+target <- c("CD8+", "Effector CD8+", "Tregs")
+TNFRSF9_target <- c("CD8+_TNFRSF9_lo", "CD8+_TNFRSF9_hi",
+                    "Effector_CD8+_TNFRSF9_lo", "Effector_CD8+_TNFRSF9_hi",
+                    "Tregs_TNFRSF9_lo", "Tregs_TNFRSF9_hi")
+
+for(cell in target){
+  patient_cell_count <- paste0(cell, "_count")
+  immune_cells[[patient_cell_count]] <- sapply(immune_cells$ID, function(x){
+    nrow(seurat@meta.data[seurat@meta.data$sample_ID == x &
+                            seurat@meta.data$immune_clusters_4 == cell,])
+  })
+}
+for(cell in TNFRSF9_target){
+  patient_cell_count <- paste0(cell, "_count")
+  immune_cells[[patient_cell_count]] <- sapply(immune_cells$ID, function(x){
+    nrow(seurat@meta.data[seurat@meta.data$sample_ID == x &
+                            seurat@meta.data$cell_type_TNFRSF9_class == cell,])
+  })
+}
+
+# replace spaces with underscores
+colnames(immune_cells) <- gsub(" ", "_", colnames(immune_cells))
+# fix space in target names
+target <- gsub(" ", "_", target)
+
+ct_counts <- colnames(immune_cells)[gsub("_count", "", colnames(immune_cells)) %in%
+                                      target]
+for(type_count in ct_counts){
+  type_prop <- gsub("_count", "_proportion", type_count)
+  type_hi <- gsub("_count", "_TNFRSF9_hi", type_count)
+  type_hi_count <- paste0(type_hi, "_count")
+  type_hi_prop <- paste0(type_hi, "_proportion")
+  type_lo <- gsub("_count", "_TNFRSF9_lo", type_count)
+  type_lo_count <- paste0(type_lo, "_count")
+  type_lo_prop <- paste0(type_lo, "_proportion")
+  
+  immune_cells[[type_prop]] <- immune_cells[[type_count]] / immune_cells[["cell_count"]]
+  immune_cells[[type_hi_prop]] <- immune_cells[[type_hi_count]] / immune_cells[[type_count]]
+  immune_cells[[type_lo_prop]] <- immune_cells[[type_lo_count]] / immune_cells[[type_count]]
+}
+
+
+
+for(ct in target){
+  # subset dataframe to the targeted cell type
+  ct_cols <- append(c("ID", "manuscript"),
+                    colnames(immune_cells)[startsWith(colnames(immune_cells), paste0(ct, "_"))])
+  ct_cells <- immune_cells[,colnames(immune_cells) %in% ct_cols]
+  # number of patients
+  pat_count <- nrow(ct_cells)
+  # number of patients with at least one count of the cells of interest
+  pat_pos_count <- nrow(ct_cells[ct_cells[4] > 0,])
+  
+  # print number of patients that have counts of the targeted cell type
+  paste0("samples with measured ", ct, " counts: ", pat_pos_count, " / ", pat_count)
+  ## Plot stacked barplot of TNFRSF9 class cell counts ########################
+  # convert to stacked dataframe
+  ct_stacked_counts <- pivot_longer(ct_cells,
+                             cols = colnames(ct_cells)[4:5])
+  colnames(ct_stacked_counts)[7:8] <- c("TNFRSF9_class", "TNFRSF9_counts")
+  # shorten the plot label by removing "_counts"
+  ct_stacked_counts$TNFRSF9_class <- gsub("_count", "", ct_stacked_counts$TNFRSF9_class)
+  # convert the label to a factor for correct ordering
+  level_hi <- grep("_TNFRSF9_hi", ct_stacked_counts$TNFRSF9_class, value = TRUE)[1]
+  level_lo <- grep("_TNFRSF9_lo", ct_stacked_counts$TNFRSF9_class, value = TRUE)[1]
+  ct_stacked_counts$TNFRSF9_class <- factor(ct_stacked_counts$TNFRSF9_class,
+                                     levels = c(level_hi, level_lo))
+  # stacked barplot
+  plot1 <- ggplot(ct_stacked_counts,
+         aes(fill=TNFRSF9_class, y=TNFRSF9_counts, x=ID)) + 
+    geom_bar(position="stack", stat="identity") +
+    ylab("cell count") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+          legend.position = "right") +
+    ggtitle(paste0(ct, ": TNFRSF9 Expressing Count"))
+  print(plot1)
+  ggsave(filename = paste0(filepath, "/", ct, "_TNFRSF9_expressing_count.pdf"),
+         plot = plot1,
+         width = unit(12, "in"),
+         height = unit(6, "in"))
+  
+  ## Plot stacked barplot of TNFRSF9 class proportions ########################
+  
+  # excludes subjects with no cells of the targeted cell type
+  # subset data frame to cells with counts of the targeted cell type
+  ct_cells <- ct_cells[ct_cells[3] > 0,]
+  
+  # convert to stacked dataframe
+  ct_stacked <- pivot_longer(ct_cells,
+                             cols = colnames(ct_cells)[7:8])
+  colnames(ct_stacked)[7:8] <- c("TNFRSF9_class", "TNFRSF9_proportion")
+  # shorten the plot label by removing "_proportion"
+  ct_stacked$TNFRSF9_class <- gsub("_proportion", "", ct_stacked$TNFRSF9_class)
+  # convert the label to a factor for correct ordering
+  level_hi <- grep("_TNFRSF9_hi", ct_stacked$TNFRSF9_class, value = TRUE)[1]
+  level_lo <- grep("_TNFRSF9_lo", ct_stacked$TNFRSF9_class, value = TRUE)[1]
+  ct_stacked$TNFRSF9_class <- factor(ct_stacked$TNFRSF9_class,
+                                     levels = c(level_hi, level_lo))
+  # stacked barplot
+  plot2 <- ggplot(ct_stacked,
+         aes(fill=TNFRSF9_class, y=TNFRSF9_proportion, x=ID)) + 
+    geom_bar(position="stack", stat="identity") +
+    ylab("proportion of cells") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+          legend.position = "right") +
+    ggtitle(paste0(ct, ": TNFRSF9 Expressing Proportion"))
+  print(plot2)
+  ggsave(filename = paste0(filepath, "/", ct, "_TNFRSF9_expressing_proportion.pdf"),
+         plot = plot2,
+         width = unit(12, "in"),
+         height = unit(6, "in"))
+  
+  # report mean proportions of cells at hi, lo, and no expression
+  writeLines(paste0("mean proportion of ", ct, " with high TNFRSF9 expression: ",
+                    mean(ct_cells[[8]]), "\n sd = ", sd(ct_cells[[8]]), " ; n = ",
+                    pat_pos_count))
+}
+```
+
+```{r}
+# save rds files for the Seurat object
+saveRDS(object = seurat,
+        file = paste0(resultpath, "/T_immune_Steele_seurat_TNFRSF9_classifier.rds"))
+
+# save the a loom file of the counts matrix
+loom_seurat <- create(filename = paste0(resultpath, "/T_immune_subset_seurat_counts_matrix.loom"),
+                      data = seurat@assays$RNA@counts)
+```
+
+```{r}
+sessionInfo()
+```
+
