@@ -3,7 +3,9 @@
 ### Author:
 ### Joe Tandurella
 
-Repository created to house code pertaining to the J1568 MultiOmics Paper
+Repository created to house code for bulk RNA-seq, whole exome sequencing, TCR, BCR, and single-cell analyses for [Li et al, 2022](https://www.cell.com/cancer-cell/pdf/S1535-6108(22)00492-5.pdf). 
+
+The folder [~/Scripts](https://github.com/FertigLab/J1568_Bulk/tree/main/Scripts) contains all code for bulk analyses. 
 
 # PDAC_Atlas_Immune_Domino
 
@@ -12,7 +14,7 @@ Repository created to house code pertaining to the J1568 MultiOmics Paper
 
 ## Order of Operations
 
-scripts used for the analysis are stored in the PDAC_Atlas_Immune_Domino/R/ folder
+The folder [~/PDAC_Atlas_Immune_Domino/R](https://github.com/FertigLab/J1568_Bulk/tree/main/PDAC_Atlas_Immune_Domino/R) contains all code for single cell and Domino analysis.
 
 ### 1) 20220622_Steele_TNFRSF9_classifier_domino_preprocessing.rmd
 
@@ -48,3 +50,4 @@ Plots results from the domino analysis as heat maps of incoming signals, gene ne
 ### 8) 20220721_Supplement_Tables_DE_GSEA_Results.rmd
 
 Save tables of significant gene set enrichment analysis and differential expression results from the MAST test between TNFRSF9 hi and lo cells by cell type.
+
